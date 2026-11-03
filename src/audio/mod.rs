@@ -673,3 +673,228 @@ fn record(
         })
         .map_err(resampling_error)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packet_float_conversion_retains_stereo_and_rejects_invalid_lengths() {
+        let bytes: Vec<_> = [0.25f32, -0.5]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        assert_eq!(decode_packet(&bytes, 1, false).unwrap(), [[0.25, -0.5]]);
+        assert!(decode_packet(&bytes[..7], 1, false).is_err());
+    }
+
+    #[test]
+    fn silent_packets_need_no_native_data_pointer() {
+        assert_eq!(decode_packet(&[], 2, true).unwrap(), [[0.0; 2]; 2]);
+    }
+
+    #[test]
+    fn non_finite_audio_is_not_written_as_valid_pcm() {
+        let bytes: Vec<_> = [f32::NAN, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        assert!(decode_packet(&bytes, 1, false).is_err());
+    }
+
+    #[test]
+    fn common_qpc_timeline_preserves_source_start_offset() {
+        assert_eq!(frame_from_timestamp(1_000_000, 1_500_000), 2_400);
+        assert_eq!(frame_from_timestamp(2_000_000, 1_500_000), 0);
+    }
+
+    #[test]
+    fn independent_clock_drift_produces_adjusted_resampling_ratio() {
+        assert!((clock_ratio(48_048, 10_000_000).unwrap() - 48_000.0 / 48_048.0).abs() < 1e-9);
+        assert!(clock_ratio(0, 1).is_err());
+        assert!(clock_ratio(48_000, 20_000_000).is_err());
+    }
+
+    #[test]
+    fn combined_mix_preserves_both_sources_with_headroom() {
+        assert_eq!(mix_frame([0.8, 0.8], Some([0.2, -0.2])), [0.5, 0.3]);
+        assert_eq!(mix_frame([0.5, 0.5], None), [0.5, 0.5]);
+    }
+
+    #[test]
+    fn source_timeline_preserves_offset_and_missing_output_is_silence() {
+        let mut timeline = Timeline::default();
+        timeline
+            .push(480, vec![[0.2, -0.2], [0.3, -0.3]], 0)
+            .unwrap();
+        assert_eq!(timeline.sample_at(0), None);
+        assert_eq!(timeline.sample_at(480), Some([0.2, -0.2]));
+        assert_eq!(timeline.sample_at(481), Some([0.3, -0.3]));
+        assert_eq!(timeline.sample_at(482), None);
+    }
+
+    #[test]
+    fn late_audio_is_an_interruption_not_a_silent_drop() {
+        let mut timeline = Timeline::default();
+        assert!(timeline.push(0, vec![[0.1; 2]; 10], 20).is_err());
+    }
+
+    #[test]
+    fn full_transcription_queue_keeps_capture_nonblocking_and_exposes_coverage_gap() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let mut delivery = LiveDelivery::default();
+        delivery.send(&sender, vec![0.1; 3]);
+        delivery.send(&sender, vec![0.2; 2]);
+        assert_eq!(delivery.next_sample, 5);
+        assert_eq!(receiver.try_recv().unwrap().start_sample, 0);
+        delivery.send(&sender, vec![0.3]);
+        assert_eq!(receiver.try_recv().unwrap().start_sample, 5);
+    }
+
+    #[test]
+    fn sleep_or_clock_reversal_is_not_fabricated_as_continuous_audio() {
+        assert!(check_clock_step(10_000_000, 20_000_000).is_err());
+        assert!(check_clock_step(10_000_000, 9_000_000).is_err());
+        assert!(check_clock_step(10_000_000, 10_050_000).is_ok());
+    }
+
+    #[test]
+    fn variable_native_packets_and_filter_tail_preserve_duration() {
+        let mut clock = SourceClock::new(0, 0).unwrap();
+        let mut timeline = Timeline::default();
+        let mut samples = 0;
+        for count in [479, 481, 137, 823] {
+            clock
+                .accept(
+                    samples * 10_000_000 / 48_000,
+                    vec![[0.25, -0.25]; count],
+                    &mut timeline,
+                    0,
+                )
+                .unwrap();
+            samples += count as u64;
+        }
+        clock.finish(&mut timeline, 0).unwrap();
+        assert_eq!(clock.cursor, samples);
+        assert!(timeline.sample_at(samples - 1).is_some());
+        assert_eq!(timeline.sample_at(samples), None);
+    }
+
+    #[test]
+    fn resumed_output_uses_its_new_qpc_offset_after_a_quiet_gap() {
+        let mut timeline = Timeline::default();
+        let mut first = SourceClock::new(0, 0).unwrap();
+        first
+            .accept(0, vec![[0.2; 2]; 480], &mut timeline, 0)
+            .unwrap();
+        first.finish(&mut timeline, 0).unwrap();
+        let mut resumed = SourceClock::new(0, 1_000_000).unwrap();
+        resumed
+            .accept(1_000_000, vec![[0.4; 2]; 480], &mut timeline, 0)
+            .unwrap();
+        resumed.finish(&mut timeline, 0).unwrap();
+        assert!(timeline.sample_at(479).is_some());
+        assert_eq!(timeline.sample_at(2_400), None);
+        assert!(timeline.sample_at(4_800).is_some());
+    }
+
+    #[test]
+    fn live_downsampling_filters_out_of_band_sound() {
+        fn rms(hz: f32) -> f32 {
+            let mut converter = Converter::new(1, 1.0 / 3.0, true).unwrap();
+            let input: Vec<_> = (0..4_800)
+                .map(|index| (index as f32 * std::f32::consts::TAU * hz / 48_000.0).sin())
+                .collect();
+            let output = converter.convert(&input).unwrap();
+            (output.iter().map(|sample| sample * sample).sum::<f32>() / output.len() as f32).sqrt()
+        }
+        assert!(rms(1_000.0) > 0.65);
+        assert!(rms(12_000.0) < 0.05);
+    }
+
+    #[test]
+    fn live_conversion_failure_reports_a_reason_and_disables_only_that_branch() {
+        let (errors, messages) = mpsc::sync_channel(1);
+        let mut converter = Some(Converter::new(1, 1.0 / 3.0, true).unwrap());
+        assert!(convert_live(&mut converter, &vec![0.1; 48_001], &errors).is_none());
+        assert!(converter.is_none());
+        assert!(
+            messages
+                .try_recv()
+                .expect("ASR conversion failure must reach the UI")
+                .contains("normalize")
+        );
+    }
+
+    #[test]
+    fn a_full_transcription_error_channel_never_blocks_audio_work() {
+        let (errors, messages) = mpsc::sync_channel(1);
+        errors.send("first failure".into()).unwrap();
+        let mut converter = Some(Converter::new(1, 1.0 / 3.0, true).unwrap());
+        assert!(convert_live(&mut converter, &vec![0.1; 48_001], &errors).is_none());
+        assert_eq!(messages.try_recv().unwrap(), "first failure");
+        assert!(converter.is_none());
+    }
+
+    #[test]
+    fn required_sources_are_validated_before_a_session_is_created() {
+        let config = CaptureConfig {
+            mode: RecordingMode::MicrophoneAndComputer,
+            microphone_id: "mic".into(),
+            output_id: None,
+            save_folder: PathBuf::new(),
+        };
+        assert!(start(config, None).is_err());
+    }
+
+    #[test]
+    fn invalid_endpoint_preflight_never_reports_started() {
+        let folder = std::env::temp_dir().join(format!(
+            "rustcorder-audio-preflight-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&folder).unwrap();
+        let config = CaptureConfig {
+            mode: RecordingMode::Microphone,
+            microphone_id: "rustcorder-intentionally-invalid-endpoint".into(),
+            output_id: None,
+            save_folder: folder.clone(),
+        };
+        let session = start(config, None).unwrap();
+        let event = session.events.recv_timeout(Duration::from_secs(6)).unwrap();
+        assert!(
+            matches!(event, AudioEvent::Failed(_)),
+            "Unexpected event: {event:?}"
+        );
+        drop(session);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn resampled_independent_clock_tracks_the_common_timeline() {
+        let mut timeline = Timeline::default();
+        let mut clock = SourceClock::new(0, 0).unwrap();
+        let mut written = 0;
+        // 481 source frames per 10 ms, against the common 480-frame clock.
+        for tick in 0..1_000 {
+            clock
+                .accept(tick * 100_000, vec![[0.1; 2]; 481], &mut timeline, written)
+                .unwrap();
+            while written + 4_800 < tick * 480 {
+                timeline.sample_at(written);
+                written += 1;
+            }
+        }
+        clock.finish(&mut timeline, written).unwrap();
+        assert!(
+            clock.cursor.abs_diff(480_000) < 100,
+            "Clock drift: {} frames",
+            clock.cursor.abs_diff(480_000)
+        );
+        assert!(timeline.buffered < 6_000);
+    }
+}

@@ -1,0 +1,21 @@
+[package]
+name = "rustcorder"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "accesskit", "clipboard", "default_fonts"] }
+rfd = { version = "0.17.2", default-features = false }
+wasapi = "0.26.0"
+rubato = "5.0.1"
+hound = "3.5.1"
+symphonia = { version = "0.6.1", default-features = false, features = ["wav", "pcm", "mp3"] }
+whisper-rs = { version = "0.16.0", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+windows = { version = "0.62.2", features = ["Win32_Media_Audio", "Win32_Foundation", "Win32_System_Threading", "Win32_System_Performance", "Win32_System_Com"] }
+
+[dev-dependencies]
+unicode-normalization = "0.1.25"

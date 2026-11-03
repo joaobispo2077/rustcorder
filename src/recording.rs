@@ -214,3 +214,247 @@ fn pcm_sample(sample: f32) -> i16 {
     let scale = if sample < 0.0 { 32768.0 } else { 32767.0 };
     (sample * scale).round() as i16
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::io::{self, Cursor, Read, SeekFrom};
+    use std::rc::Rc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[derive(Default)]
+    struct State {
+        bytes: Cursor<Vec<u8>>,
+        fail_after: Option<u64>,
+        fail_seek: bool,
+        fail_flush: bool,
+    }
+    struct Shared(Rc<RefCell<State>>);
+    impl Write for Shared {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let mut state = self.0.borrow_mut();
+            if let Some(limit) = state.fail_after {
+                let remaining = limit.saturating_sub(state.bytes.position()) as usize;
+                if remaining == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::StorageFull,
+                        "injected disk full",
+                    ));
+                }
+                return state.bytes.write(&bytes[..remaining.min(bytes.len())]);
+            }
+            state.bytes.write(bytes)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            if self.0.borrow().fail_flush {
+                Err(io::Error::other("injected flush failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    impl Seek for Shared {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            let mut state = self.0.borrow_mut();
+            if state.fail_seek {
+                Err(io::Error::other("injected seek failure"))
+            } else {
+                state.bytes.seek(position)
+            }
+        }
+    }
+    fn sink(max_frames: u64) -> (RecordingWriter<Shared>, Rc<RefCell<State>>) {
+        let state = Rc::new(RefCell::new(State::default()));
+        let result =
+            RecordingWriter::from_writer(Shared(state.clone()), "partial.wav".into(), max_frames);
+        assert!(result.is_ok(), "a writable sink must initialize");
+        let writer = result.unwrap();
+        (writer, state)
+    }
+    fn folder() -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/recording-tests")
+            .join(format!(
+                "{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+    #[test]
+    fn float_pcm_conversion_clamps_and_preserves_both_signed_endpoints() {
+        assert_eq!(pcm_sample(-2.0), i16::MIN);
+        assert_eq!(pcm_sample(-1.0), i16::MIN);
+        assert_eq!(pcm_sample(0.0), 0);
+        assert_eq!(pcm_sample(1.0), i16::MAX);
+        assert_eq!(pcm_sample(2.0), i16::MAX);
+        assert_eq!(pcm_sample(0.5), 16_384);
+    }
+    #[test]
+    fn pcm_round_trip_has_stereo_48khz_header_and_frame_duration() {
+        let (mut writer, state) = sink(MAX_FRAMES);
+        writer.append_pcm(&[i16::MIN, i16::MAX, 23, -45]).unwrap();
+        assert_eq!(writer.frames_written(), 2);
+        let outcome = writer.finalize(None);
+        assert_eq!(outcome.status, RecordingStatus::Completed);
+        assert_eq!(outcome.frames, 2);
+        assert!(outcome.error.is_none());
+        let mut reader =
+            hound::WavReader::new(Cursor::new(state.borrow().bytes.get_ref().clone())).unwrap();
+        assert_eq!(reader.spec().sample_rate, SAMPLE_RATE);
+        assert_eq!(reader.spec().channels, CHANNELS);
+        assert_eq!(reader.spec().bits_per_sample, 16);
+        assert_eq!(reader.duration(), 2);
+        assert_eq!(
+            reader
+                .samples::<i16>()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            vec![i16::MIN, i16::MAX, 23, -45]
+        );
+    }
+    #[test]
+    fn float_append_writes_complete_clamped_pcm_frames() {
+        let (mut writer, state) = sink(MAX_FRAMES);
+        writer.append_interleaved(&[-2.0, 2.0, 0.0, 0.5]).unwrap();
+        assert_eq!(writer.finalize(None).status, RecordingStatus::Completed);
+        let samples = hound::WavReader::new(Cursor::new(state.borrow().bytes.get_ref().clone()))
+            .unwrap()
+            .samples::<i16>()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(samples, vec![i16::MIN, i16::MAX, 0, 16_384]);
+    }
+    #[test]
+    fn odd_or_nonfinite_input_is_rejected_before_writing_any_samples() {
+        for invalid in [vec![0.1], vec![0.0, f32::NAN], vec![f32::INFINITY, 0.0]] {
+            let (mut writer, _) = sink(MAX_FRAMES);
+            assert_eq!(
+                writer.append_interleaved(&invalid),
+                Err(RecordingError::InvalidSamples)
+            );
+            assert_eq!(writer.frames_written(), 0);
+            assert_ne!(writer.finalize(None).status, RecordingStatus::Completed);
+        }
+        let (mut writer, _) = sink(MAX_FRAMES);
+        assert_eq!(writer.append_pcm(&[1]), Err(RecordingError::InvalidSamples));
+        assert_eq!(writer.frames_written(), 0);
+    }
+    #[test]
+    fn the_six_hour_cap_fits_standard_riff_and_never_writes_past_boundary() {
+        assert!(MAX_FRAMES * 4 + 68 < u32::MAX as u64);
+        let (mut writer, state) = sink(3);
+        assert_eq!(
+            writer.append_pcm(&[1, 2, 3, 4, 5, 6, 7, 8]),
+            Err(RecordingError::LimitReached)
+        );
+        assert_eq!(writer.frames_written(), 3);
+        assert!(writer.limit_reached());
+        assert_eq!(
+            writer.append_pcm(&[9, 10]),
+            Err(RecordingError::LimitReached)
+        );
+        assert_eq!(writer.finalize(None).status, RecordingStatus::Completed);
+        let reader =
+            hound::WavReader::new(Cursor::new(state.borrow().bytes.get_ref().clone())).unwrap();
+        assert_eq!(reader.duration(), 3);
+    }
+    #[test]
+    fn exact_boundary_returns_controlled_stop_with_valid_audio() {
+        let (mut writer, _) = sink(1);
+        assert_eq!(
+            writer.append_pcm(&[1, 2]),
+            Err(RecordingError::LimitReached)
+        );
+        assert_eq!(writer.frames_written(), 1);
+        assert_eq!(writer.finalize(None).status, RecordingStatus::Completed);
+    }
+    #[test]
+    fn interrupted_capture_preserves_playable_partial_audio_and_reason() {
+        let (mut writer, state) = sink(MAX_FRAMES);
+        writer.append_pcm(&[1, 2, 3, 4]).unwrap();
+        let result = writer.finalize(Some("microphone disconnected".into()));
+        assert_eq!(result.status, RecordingStatus::Partial);
+        assert_eq!(result.path, PathBuf::from("partial.wav"));
+        assert!(result.error.unwrap().contains("disconnected"));
+        assert_eq!(
+            hound::WavReader::new(Cursor::new(state.borrow().bytes.get_ref().clone()))
+                .unwrap()
+                .duration(),
+            2
+        );
+    }
+    #[test]
+    fn write_failure_is_latched_and_never_reported_as_completed() {
+        let (mut writer, state) = sink(MAX_FRAMES);
+        writer.append_pcm(&[1, 2]).unwrap();
+        let position = state.borrow().bytes.position();
+        state.borrow_mut().fail_after = Some(position);
+        assert!(writer.append_pcm(&[3, 4]).is_err());
+        assert!(writer.append_pcm(&[5, 6]).is_err());
+        let result = writer.finalize(None);
+        assert_ne!(result.status, RecordingStatus::Completed);
+        assert!(result.error.is_some());
+        assert_eq!(result.path, PathBuf::from("partial.wav"));
+    }
+    #[test]
+    fn header_seek_and_buffer_flush_failures_are_explicit_save_failures() {
+        for fail_seek in [false, true] {
+            let (mut writer, state) = sink(MAX_FRAMES);
+            writer.append_pcm(&[1, 2]).unwrap();
+            state.borrow_mut().fail_seek = fail_seek;
+            state.borrow_mut().fail_flush = !fail_seek;
+            let result = writer.finalize(None);
+            assert_eq!(result.status, RecordingStatus::SaveFailed);
+            assert!(result.error.is_some());
+            assert_eq!(result.path, PathBuf::from("partial.wav"));
+        }
+    }
+    #[test]
+    fn create_new_names_never_overwrite_an_existing_recording() {
+        let folder = folder();
+        let mut first = WavRecording::create_named(&folder, "same-name").unwrap();
+        first.append_pcm(&[17, 18]).unwrap();
+        let first = first.finalize(None);
+        let original = std::fs::read(&first.path).unwrap();
+        let mut second = WavRecording::create_named(&folder, "same-name").unwrap();
+        second.append_pcm(&[19, 20]).unwrap();
+        let second = second.finalize(None);
+        assert_ne!(first.path, second.path);
+        assert_eq!(std::fs::read(first.path).unwrap(), original);
+        assert_eq!(second.status, RecordingStatus::Completed);
+    }
+    #[test]
+    fn missing_or_non_directory_destination_fails_preflight() {
+        let folder = folder();
+        assert!(WavRecording::create(&folder.join("missing")).is_err());
+        let file = folder.join("not-a-folder");
+        std::fs::write(&file, b"existing input").unwrap();
+        assert!(WavRecording::create(&file).is_err());
+        assert_eq!(std::fs::read(file).unwrap(), b"existing input");
+    }
+    #[test]
+    fn real_saved_file_reopens_with_original_pcm() {
+        let mut writer = WavRecording::create(&folder()).unwrap();
+        assert!(writer.path().is_file());
+        writer.append_pcm(&[12, -12, 45, -45]).unwrap();
+        let result = writer.finalize(None);
+        let mut reader = hound::WavReader::open(&result.path).unwrap();
+        let mut bytes = Vec::new();
+        File::open(&result.path)
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert!(!bytes.is_empty());
+        assert_eq!(
+            reader
+                .samples::<i16>()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            vec![12, -12, 45, -45]
+        );
+    }
+}

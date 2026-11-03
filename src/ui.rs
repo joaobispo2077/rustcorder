@@ -796,3 +796,162 @@ fn ui_busy(controller: &Controller, resources_pending: bool) -> bool {
 fn live_finish_ready(capture: &CaptureState) -> bool {
     matches!(capture, CaptureState::Idle | CaptureState::Finished(_))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn desktop_fixture() -> Desktop {
+        let config = AppConfig {
+            microphone_id: Some("mic".into()),
+            save_folder: "recordings".into(),
+            live_transcription: true,
+            model: Some(ModelConfig {
+                path: "model.bin".into(),
+                language: Language::Portuguese,
+            }),
+            ..AppConfig::default()
+        };
+        let mut controller = Controller::new(config);
+        controller.start_model_validation().unwrap();
+        controller.finish_model_validation(Ok(())).unwrap();
+        controller.start_recording(Ok(())).unwrap();
+        controller.capture_started().unwrap();
+        let (background_sender, background) = mpsc::channel();
+        Desktop {
+            controller,
+            settings: Settings::default(),
+            devices: vec![],
+            models: vec![],
+            background,
+            background_sender,
+            session: None,
+            capture_pending: false,
+            job: None,
+            job_mode: Some(JobMode::Live),
+            live_input: None,
+            transcript: Transcript::default(),
+            file: None,
+            file_tab: false,
+            status: String::new(),
+            notice: String::new(),
+            peak: 0.0,
+            frames: 0,
+            close_prompt: false,
+            close_after: false,
+            stopped_early: false,
+            text_failure: None,
+            user_cancelled: false,
+            pending_live_finish: None,
+        }
+    }
+    #[test]
+    fn live_completion_arriving_before_audio_completion_is_retained_then_applied() {
+        let mut app = desktop_fixture();
+        app.transcript.apply(vec![], 0, 100, true);
+        app.pending_live_finish = Some(JobEvent::Finished {
+            result: Ok(()),
+            end: 100,
+            gap: false,
+        });
+        app.poll();
+        assert!(
+            app.pending_live_finish.is_some(),
+            "A successful text outcome must wait for saved audio length"
+        );
+        assert_eq!(app.controller.transcription(), &TranscriptionState::Live);
+        let (events, receiver) = mpsc::channel();
+        let (_, errors) = mpsc::channel();
+        app.session = Some(Session::test_session(receiver, errors));
+        events
+            .send(AudioEvent::Finished {
+                path: "saved.wav".into(),
+                frames: 300,
+                interrupted: None,
+            })
+            .unwrap();
+        app.poll();
+        assert!(app.pending_live_finish.is_none());
+        assert_eq!(
+            app.controller.transcription(),
+            &TranscriptionState::Finished(TextOutcome::NoSpeech)
+        );
+        assert!(!app.busy());
+    }
+    #[test]
+    fn audio_terminal_drains_text_errors_that_arrived_after_the_initial_poll() {
+        let mut app = desktop_fixture();
+        let (_events, receiver) = mpsc::channel();
+        let (errors, error_receiver) = mpsc::channel();
+        app.session = Some(Session::test_session(receiver, error_receiver));
+        app.poll_text_errors();
+        errors.send("last converter failed".into()).unwrap();
+        app.finish_audio_session();
+        assert_eq!(app.transcript.reason(), Some("last converter failed"));
+        assert!(app.session.is_none());
+    }
+    #[test]
+    fn stopping_during_model_preload_keeps_actions_locked_until_the_job_exits() {
+        let mut controller = Controller::default();
+        let mut config = AppConfig {
+            microphone_id: Some("mic".into()),
+            save_folder: "recordings".into(),
+            live_transcription: true,
+            model: Some(ModelConfig {
+                path: "model.bin".into(),
+                language: Language::Portuguese,
+            }),
+            ..AppConfig::default()
+        };
+        controller.configure(config.clone()).unwrap();
+        controller.start_model_validation().unwrap();
+        controller.finish_model_validation(Ok(())).unwrap();
+        controller.start_recording(Ok(())).unwrap();
+        controller.stop_recording().unwrap();
+        controller.capture_stopped().unwrap();
+        controller
+            .finish_audio(AudioOutcome::Failed("preload stopped".into()))
+            .unwrap();
+        assert!(!controller.is_busy());
+        assert!(ui_busy(&controller, true));
+        assert!(!ui_busy(&controller, false));
+        config.live_transcription = false;
+        assert!(controller.configure(config).is_ok());
+    }
+    #[test]
+    fn explicit_cancel_has_distinct_status_and_preserves_incomplete_unicode() {
+        let mut transcript = Transcript::default();
+        transcript.apply(
+            vec![crate::transcription::Segment {
+                start_sample: 0,
+                end_sample: 100,
+                text: "ação segura".into(),
+            }],
+            0,
+            100,
+            true,
+        );
+        assert_eq!(
+            text_outcome(Err("Cancelled".into()), true, &mut transcript, 100, None),
+            TextOutcome::Cancelled
+        );
+        assert!(transcript.export_text().contains("INCOMPLETE"));
+        assert!(transcript.export_text().contains("ação segura"));
+    }
+    #[test]
+    fn worker_deadline_is_not_presented_as_a_user_cancellation() {
+        let mut transcript = Transcript::default();
+        assert!(matches!(
+            text_outcome(Err("deadline".into()), false, &mut transcript, 100, None),
+            TextOutcome::Incomplete(_)
+        ));
+    }
+    #[test]
+    fn dropped_final_live_chunk_is_detected_from_the_saved_audio_length() {
+        let mut transcript = Transcript::default();
+        transcript.apply(vec![], 0, 100, true);
+        assert!(matches!(
+            text_outcome(Ok(()), false, &mut transcript, 100, Some(303)),
+            TextOutcome::Incomplete(_)
+        ));
+    }
+}

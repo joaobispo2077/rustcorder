@@ -70,6 +70,18 @@ pub struct Session {
     stop_at: Arc<AtomicU64>,
 }
 impl Session {
+    #[cfg(test)]
+    pub(crate) fn test_session(
+        events: Receiver<AudioEvent>,
+        transcription_errors: Receiver<String>,
+    ) -> Self {
+        Self {
+            events,
+            transcription_errors,
+            stop: Arc::new(AtomicBool::new(false)),
+            stop_at: Arc::new(AtomicU64::new(0)),
+        }
+    }
     pub fn stop(&self) {
         if let Ok(now) = windows::now_hns() {
             let _ = self

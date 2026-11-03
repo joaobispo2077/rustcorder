@@ -163,6 +163,10 @@ impl Job {
     pub fn file(model: ModelConfig, audio_path: PathBuf) -> Self {
         Self::file_using(model, audio_path, None)
     }
+    #[doc(hidden)]
+    pub fn file_with_command(model: ModelConfig, audio_path: PathBuf, command: Command) -> Self {
+        Self::file_using(model, audio_path, Some(command))
+    }
     fn file_using(model: ModelConfig, audio_path: PathBuf, command: Option<Command>) -> Self {
         Self::spawn(move |out, cancel| {
             let mut worker = spawn_worker_using(command)?;
@@ -210,6 +214,14 @@ impl Job {
     }
     pub fn live(model: ModelConfig) -> (Self, SyncSender<LiveChunk>) {
         Self::live_using(model, None, Duration::from_secs(30))
+    }
+    #[doc(hidden)]
+    pub fn live_with_command(
+        model: ModelConfig,
+        command: Command,
+        finalization_timeout: Duration,
+    ) -> (Self, SyncSender<LiveChunk>) {
+        Self::live_using(model, Some(command), finalization_timeout)
     }
     fn live_using(
         model: ModelConfig,
@@ -457,5 +469,29 @@ pub fn language(value: Language) -> &'static str {
     match value {
         Language::Portuguese => "pt",
         Language::English => "en",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn stalled_interface_queue_has_a_bounded_wait_without_user_cancellation() {
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        sender.send(JobEvent::Ready).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let thread_cancel = cancel.clone();
+        let publisher = thread::spawn(move || publish(&sender, JobEvent::Ready, &thread_cancel));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !publisher.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let finished = publisher.is_finished();
+        cancel.store(true, Ordering::Relaxed);
+        assert!(publisher.join().unwrap().is_err());
+        assert!(
+            finished,
+            "A full UI queue must not retain a native worker indefinitely"
+        );
     }
 }

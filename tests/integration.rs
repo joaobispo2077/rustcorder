@@ -12,5 +12,9 @@ mod asr_speech_gate;
 mod combined_recording;
 #[path = "integration/file_transcription.rs"]
 mod file_transcription;
+#[path = "integration/live_recording.rs"]
+mod live_recording;
 #[path = "integration/microphone_recording.rs"]
 mod microphone_recording;
+#[path = "integration/transcription_actions.rs"]
+mod transcription_actions;

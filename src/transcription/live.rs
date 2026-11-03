@@ -63,3 +63,50 @@ impl Scheduler {
         self.end
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn emits_after_stride_and_uses_absolute_offsets() {
+        let mut s = Scheduler::default();
+        s.push(0, &vec![0.0; 32_000]);
+        let w = s.take().unwrap();
+        assert_eq!((w.start, w.end()), (0, 32_000));
+    }
+    #[test]
+    fn replaces_pending_and_bounds_memory_to_eight_seconds() {
+        let mut s = Scheduler::default();
+        for i in 0..100 {
+            s.push(i * 16_000, &vec![0.5; 16_000]);
+        }
+        let w = s.take().unwrap();
+        assert_eq!(w.samples.len(), WINDOW_SAMPLES);
+        assert_eq!(w.end(), 1_600_000);
+        assert!(s.take().is_none());
+        assert!(s.samples.len() <= WINDOW_SAMPLES);
+    }
+    #[test]
+    fn reports_dropped_capture_branch_samples() {
+        let mut s = Scheduler::default();
+        s.push(0, &vec![0.0; 16_000]);
+        s.push(32_000, &vec![0.0; 32_000]);
+        assert!(s.gap);
+        assert_eq!(s.take().unwrap().start, 32_000);
+    }
+    #[test]
+    fn stop_schedules_short_final_tail_without_new_audio() {
+        let mut s = Scheduler::default();
+        s.push(0, &vec![0.0; 100]);
+        s.finish();
+        let w = s.take().unwrap();
+        assert!(w.final_window);
+        assert_eq!(w.end(), 100);
+    }
+    #[test]
+    fn empty_capture_has_no_inference_request() {
+        let mut s = Scheduler::default();
+        s.finish();
+        assert!(s.take().is_none());
+    }
+}

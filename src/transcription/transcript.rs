@@ -140,3 +140,149 @@ impl Transcript {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn first_failure_reason_survives_later_cleanup_errors() {
+        let mut t = Transcript::default();
+        t.fail("audio conversion failed");
+        t.fail("worker cancelled");
+        assert_eq!(t.reason(), Some("audio conversion failed"));
+    }
+    #[test]
+    fn overlap_across_several_committed_segments_deduplicates_once() {
+        let mut t = Transcript::default();
+        t.apply(
+            vec![
+                segment(0, 20_000, "um dois"),
+                segment(20_000, 40_000, "três quatro"),
+            ],
+            0,
+            80_000,
+            false,
+        );
+        t.apply(
+            vec![segment(10_000, 60_000, "dois três quatro cinco")],
+            10_000,
+            100_000,
+            true,
+        );
+        assert_eq!(t.stable_text(), "um dois três quatro cinco");
+    }
+    fn segment(start: u64, end: u64, text: &str) -> Segment {
+        Segment {
+            start_sample: start,
+            end_sample: end,
+            text: text.into(),
+        }
+    }
+    #[test]
+    fn final_file_segments_keep_unicode() {
+        let mut t = Transcript::default();
+        t.apply(vec![segment(0, 100, "Olá, ação!")], 0, 100, true);
+        t.finish(100);
+        assert_eq!(t.stable_text(), "Olá, ação!");
+        assert!(!t.is_incomplete());
+    }
+    #[test]
+    fn live_tail_is_replaced_without_touching_stable_words() {
+        let mut t = Transcript::default();
+        t.apply(
+            vec![
+                segment(0, 40_000, "primeira frase"),
+                segment(70_000, 100_000, "pendente"),
+            ],
+            0,
+            128_000,
+            false,
+        );
+        assert_eq!(t.stable_text(), "primeira frase");
+        assert_eq!(t.pending_text(), "pendente");
+        t.apply(
+            vec![
+                segment(70_000, 100_000, "corrigida"),
+                segment(110_000, 150_000, "última"),
+            ],
+            32_000,
+            160_000,
+            false,
+        );
+        assert_eq!(t.stable_text(), "primeira frase corrigida");
+        assert_eq!(t.pending_text(), "última");
+    }
+    #[test]
+    fn overlapping_replayed_words_do_not_duplicate_stable_text() {
+        let mut t = Transcript::default();
+        t.apply(vec![segment(0, 64_000, "um dois três")], 0, 128_000, false);
+        t.apply(
+            vec![segment(50_000, 110_000, "três quatro cinco")],
+            32_000,
+            160_000,
+            true,
+        );
+        assert_eq!(t.stable_text(), "um dois três quatro cinco");
+    }
+    #[test]
+    fn actual_repeated_phrase_at_later_time_is_preserved() {
+        let mut t = Transcript::default();
+        t.apply(vec![segment(0, 10_000, "sim sim")], 0, 80_000, false);
+        t.apply(
+            vec![segment(90_000, 100_000, "sim sim")],
+            80_000,
+            120_000,
+            true,
+        );
+        assert_eq!(t.stable_text(), "sim sim sim sim");
+    }
+    #[test]
+    fn silence_establishes_coverage_without_words() {
+        let mut t = Transcript::default();
+        t.apply(vec![], 0, 32_000, true);
+        t.finish(32_000);
+        assert_eq!(t.covered_until, 32_000);
+        assert!(!t.is_incomplete());
+    }
+    #[test]
+    fn gaps_remain_incomplete_after_later_success() {
+        let mut t = Transcript::default();
+        t.apply(vec![segment(50, 100, "depois")], 50, 100, true);
+        t.finish(100);
+        assert!(t.is_incomplete());
+        assert!(t.export_text().contains("INCOMPLETE"));
+        assert!(t.export_text().contains("depois"));
+    }
+    #[test]
+    fn final_tail_failure_retains_only_finalized_words() {
+        let mut t = Transcript::default();
+        t.apply(
+            vec![
+                segment(0, 40_000, "seguro"),
+                segment(100_000, 120_000, "revisável"),
+            ],
+            0,
+            128_000,
+            false,
+        );
+        t.fail("worker exited");
+        assert!(t.export_text().contains("seguro"));
+        assert!(!t.export_text().contains("revisável"));
+        assert!(t.is_incomplete());
+    }
+    #[test]
+    fn finalizing_an_uncovered_tail_cannot_claim_complete() {
+        let mut t = Transcript::default();
+        t.apply(vec![], 0, 100, false);
+        t.finish(101);
+        assert!(t.is_incomplete());
+    }
+    #[test]
+    fn stale_window_does_not_rewind_boundary_or_restore_pending() {
+        let mut t = Transcript::default();
+        t.apply(vec![segment(0, 100, "final")], 0, 100, true);
+        t.apply(vec![segment(0, 50, "stale")], 0, 50, false);
+        assert_eq!(t.stable_text(), "final");
+        assert!(t.pending_text().is_empty());
+    }
+}

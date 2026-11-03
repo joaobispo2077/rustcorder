@@ -1,0 +1,8 @@
+---
+description: Documentation policy
+alwaysApply: true
+---
+
+Read @AGENTS.md and @.specify/memory/constitution.md.
+
+Write user-requested behavior explanations, calculations, comparisons, decisions, versioning, branching and implementation strategies as Markdown directly under docs/ using clear kebab-case names. Keep docs practical and accurate. Link them from changelog entries without tickets. Spec Kit tool artifacts retain their prescribed paths.

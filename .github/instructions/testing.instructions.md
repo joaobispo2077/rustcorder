@@ -1,0 +1,9 @@
+---
+applyTo: "**"
+---
+
+Follow AGENTS.md and .specify/memory/constitution.md.
+
+Validate behavior first: failing test, minimal implementation, passing checks. Prefer unit tests, then boundary integration, then critical E2E. Target at least 90% cheap unit tests when feasible; justify exceptions without omitting necessary coverage. Do not delete tests without explicit request or equivalent/better replacement. Validate docs with content and link checks.
+
+Preserve behavior except for explicit requested changes. No speculative changes or unrelated refactors. Follow the request scope and prefer small focused diffs. Never change branches.

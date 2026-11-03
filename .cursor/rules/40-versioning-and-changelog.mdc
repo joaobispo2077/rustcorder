@@ -1,0 +1,8 @@
+---
+description: Versioning and changelog
+alwaysApply: true
+---
+
+Read @AGENTS.md and @.specify/memory/constitution.md.
+
+Follow SemVer; ensure CHANGELOG.md exists. Add a high-level next-version release entry only after the user confirms finished and working. Inspect tags and current versions first. Link branch tickets or scoped docs per docs/branching.md. Only then offer annotated tag commands for a specific commit. Never create/push tags without explicit execution authorization. Keep published tags immutable.

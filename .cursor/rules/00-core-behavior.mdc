@@ -1,0 +1,8 @@
+---
+description: Core behavior
+alwaysApply: true
+---
+
+Read @AGENTS.md and @.specify/memory/constitution.md.
+
+Preserve behavior except for explicit requested changes. No speculative changes or unrelated refactors. Follow the request scope and prefer small focused diffs. Never change branches.

@@ -1,0 +1,8 @@
+---
+description: Branch policy
+alwaysApply: true
+---
+
+Read @AGENTS.md and @.specify/memory/constitution.md.
+
+The user owns branch orchestration. Work only on the checked-out branch. Never create, delete, rename, checkout or switch branches, including via hooks. Infer ticket/scope context from the name without changing it.

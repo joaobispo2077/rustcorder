@@ -647,3 +647,132 @@ fn segment_range(origin: u64, limit: u64, start_cs: i64, end_cs: i64) -> (u64, u
 fn thread_budget(logical_cpus: usize) -> i32 {
     logical_cpus.saturating_sub(2).clamp(1, 8) as i32
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vad_folders() -> (PathBuf, PathBuf) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = format!(
+            "{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/vad-path-tests")
+            .join(unique);
+        let package = root.join("package");
+        let models = root.join("models");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::create_dir_all(&models).unwrap();
+        (package, models)
+    }
+
+    #[test]
+    fn bundled_detector_is_preferred_to_development_fallback() {
+        let (package, models) = vad_folders();
+        std::fs::write(package.join(VAD_FILENAME), b"candidate").unwrap();
+        std::fs::write(models.join(VAD_FILENAME), b"candidate").unwrap();
+        assert_eq!(
+            select_vad_path(
+                &package.join("rustcorder.exe"),
+                &models.join("ggml-base.bin")
+            )
+            .unwrap(),
+            package.join(VAD_FILENAME)
+        );
+    }
+
+    #[test]
+    fn development_detector_beside_asr_weights_is_used_when_not_bundled() {
+        let (package, models) = vad_folders();
+        std::fs::write(models.join(VAD_FILENAME), b"candidate").unwrap();
+        assert_eq!(
+            select_vad_path(
+                &package.join("rustcorder.exe"),
+                &models.join("ggml-base.bin")
+            )
+            .unwrap(),
+            models.join(VAD_FILENAME)
+        );
+    }
+
+    #[test]
+    fn absent_detector_has_an_actionable_error_and_directories_are_not_assets() {
+        let (package, models) = vad_folders();
+        std::fs::create_dir(package.join(VAD_FILENAME)).unwrap();
+        let error = select_vad_path(
+            &package.join("rustcorder.exe"),
+            &models.join("ggml-base.bin"),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains(VAD_FILENAME),
+            "message must name the required asset"
+        );
+        assert!(
+            error.contains("local"),
+            "message must describe local recovery"
+        );
+    }
+
+    #[test]
+    fn metadata_accepts_only_loaded_base_or_small_families() {
+        assert_eq!(metadata("base", true).unwrap().family, "base");
+        assert!(metadata("small", false).is_ok());
+        assert!(metadata("large-v3", true).is_err());
+        assert!(metadata("tiny", true).is_err());
+    }
+
+    #[test]
+    fn english_only_metadata_never_enables_portuguese() {
+        let model = metadata("base", false).unwrap();
+        assert!(check_language(&model, "en").is_ok());
+        assert!(check_language(&model, "pt").is_err());
+        assert!(check_language(&model, "auto").is_err());
+        assert!(check_language(&model, "pt-BR").is_err());
+    }
+
+    #[test]
+    fn multilingual_metadata_enables_only_explicit_pt_or_en() {
+        let model = metadata("small", true).unwrap();
+        assert!(check_language(&model, "pt").is_ok());
+        assert!(check_language(&model, "en").is_ok());
+        assert!(check_language(&model, "es").is_err());
+    }
+
+    #[test]
+    fn silence_gate_does_not_discard_quiet_samples() {
+        assert!(digital_silence(&[0.0, -0.0, 0.0]));
+        assert!(!digital_silence(&[]));
+        assert!(!digital_silence(&[0.0, 0.000_000_01]));
+        assert!(!digital_silence(&[f32::NAN]));
+    }
+
+    #[test]
+    fn segment_times_are_session_samples_clamped_to_window() {
+        assert_eq!(segment_range(32_000, 160_000, 5, 20), (32_800, 35_200));
+        assert_eq!(
+            segment_range(32_000, 160_000, -4, 50_000),
+            (32_000, 160_000)
+        );
+        assert_eq!(segment_range(32_000, 160_000, 20, 5), (35_200, 35_200));
+        assert_eq!(
+            segment_range(u64::MAX - 10, u64::MAX, i64::MAX, i64::MAX),
+            (u64::MAX, u64::MAX)
+        );
+    }
+
+    #[test]
+    fn cpu_budget_leaves_headroom_and_never_returns_zero() {
+        assert_eq!(thread_budget(0), 1);
+        assert_eq!(thread_budget(2), 1);
+        assert_eq!(thread_budget(6), 4);
+        assert_eq!(thread_budget(64), 8);
+    }
+}

@@ -9,6 +9,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+pub mod worker;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_HEADER_BYTES: usize = 64 * 1024;

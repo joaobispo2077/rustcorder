@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod audio;
+pub mod models;
 pub mod recording;
 pub mod settings;
 pub mod transcription;

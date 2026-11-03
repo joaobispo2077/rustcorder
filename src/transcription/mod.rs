@@ -9,6 +9,9 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+pub mod jobs;
+pub mod live;
+pub mod transcript;
 pub mod worker;
 
 pub const PROTOCOL_VERSION: u32 = 1;

@@ -1,7 +1,8 @@
 param(
     [ValidateSet('Debug', 'Release')][string]$Profile = 'Release',
     [switch]$SkipBuild,
-    [string]$Name = ('rustcorder-win-x64-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmssfff'))
+    [string]$Name = ('rustcorder-win-x64-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmssfff')),
+    [switch]$SelfCheck
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,6 +55,50 @@ function Resolve-VerifiedVadAsset([string]$AssetPath, [string]$ExpectedSha256) {
         throw "Offline VAD asset SHA-256 verification failed: $resolved"
     }
     return $resolved
+}
+
+if ($SelfCheck) {
+    $valid = Resolve-PackageDestination ('self-check-valid-' + [Guid]::NewGuid().ToString('N'))
+    if (-not $valid.StartsWith($taskDist + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Self-check failed: destination escaped dist.'
+    }
+    foreach ($invalid in @('', '..', '../escape', 'nested/name', 'C:\outside', 'bad name')) {
+        $rejected = $false
+        try { Resolve-PackageDestination $invalid | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw "Self-check failed: unsafe name '$invalid' was accepted." }
+    }
+    New-Item -ItemType Directory -Path $taskDist -Force | Out-Null
+    $probe = Join-Path $taskDist ('self-check-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $probe | Out-Null
+    try {
+        $rejected = $false
+        try { Resolve-PackageDestination (Split-Path -Leaf $probe) | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw 'Self-check failed: existing destination was accepted.' }
+        $vadProbe = Join-Path $probe 'test-vad.bin'
+        [IO.File]::WriteAllBytes($vadProbe, [byte[]](0x61, 0x62, 0x63))
+        $vadProbeHash = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+        $failures = @()
+        foreach ($bad in @(
+            @{ Path = (Join-Path $probe 'missing-vad.bin'); Hash = $vadProbeHash },
+            @{ Path = $vadProbe; Hash = ('0' * 64) }
+        )) {
+            $rejected = $false
+            try { Resolve-VerifiedVadAsset $bad.Path $bad.Hash | Out-Null } catch { $rejected = $true }
+            if (-not $rejected) { $failures += $bad.Path }
+        }
+        if ((Resolve-VerifiedVadAsset $vadProbe $vadProbeHash) -ne $vadProbe) {
+            throw 'Self-check failed: a valid VAD asset was rejected.'
+        }
+        if ($failures.Count) { throw ('Self-check failed: missing/corrupt VAD assets were accepted: ' + ($failures -join ', ')) }
+    } finally {
+        if (-not ([IO.Path]::GetFullPath($probe)).StartsWith($taskDist + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Refusing cleanup outside the package test directory.'
+        }
+        Remove-Item -LiteralPath (Join-Path $probe 'test-vad.bin') -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $probe
+    }
+    Write-Output 'Package self-check passed: path/overwrite guards and valid/missing/corrupt VAD asset checks.'
+    exit 0
 }
 
 $taskDestination = Resolve-PackageDestination $Name

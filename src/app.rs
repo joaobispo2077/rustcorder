@@ -314,3 +314,263 @@ impl Controller {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_plan_secures_audio_before_cancelling_text_or_discarding_words() {
+        let mut app = ready_controller(true);
+        app.start_recording(Ok(())).unwrap();
+        app.capture_started().unwrap();
+        assert_eq!(app.close_plan(true), ClosePlan::StopAndSave);
+        app.stop_recording().unwrap();
+        app.capture_stopped().unwrap();
+        assert_eq!(app.close_plan(true), ClosePlan::StopAndSave);
+        app.finish_audio(AudioOutcome::Completed("audio.wav".into()))
+            .unwrap();
+        assert_eq!(app.close_plan(true), ClosePlan::CancelTranscription);
+        app.finish_transcription(TextOutcome::Cancelled).unwrap();
+        assert_eq!(app.close_plan(true), ClosePlan::DiscardUnsavedText);
+        assert_eq!(app.close_plan(false), ClosePlan::Close);
+    }
+
+    fn recording_config() -> AppConfig {
+        AppConfig {
+            microphone_id: Some("mic-1".into()),
+            save_folder: "recordings".into(),
+            ..AppConfig::default()
+        }
+    }
+
+    fn ready_controller(live: bool) -> Controller {
+        let mut config = recording_config();
+        config.live_transcription = live;
+        config.model = Some(ModelConfig {
+            path: "models/ggml-base.bin".into(),
+            language: Language::Portuguese,
+        });
+        let mut app = Controller::new(config);
+        app.start_model_validation().unwrap();
+        app.finish_model_validation(Ok(())).unwrap();
+        app
+    }
+
+    #[test]
+    fn live_success_waits_for_capture_stop() {
+        for outcome in [TextOutcome::Completed, TextOutcome::NoSpeech] {
+            let mut app = ready_controller(true);
+            app.start_recording(Ok(())).unwrap();
+            app.capture_started().unwrap();
+            assert_eq!(
+                app.finish_transcription(outcome),
+                Err(AppError::InvalidTransition)
+            );
+            assert_eq!(app.transcription(), &TranscriptionState::Live);
+            app.stop_recording().unwrap();
+            app.capture_stopped().unwrap();
+            assert_eq!(app.transcription(), &TranscriptionState::Finalizing);
+        }
+    }
+
+    #[test]
+    fn recording_does_not_require_models_and_reports_actual_start() {
+        let mut app = Controller::new(recording_config());
+        app.start_recording(Ok(())).unwrap();
+        assert_eq!(app.capture(), &CaptureState::Starting);
+        app.capture_started().unwrap();
+        assert_eq!(app.capture(), &CaptureState::Recording);
+        assert_eq!(app.model(), &ModelState::NotConfigured);
+    }
+
+    #[test]
+    fn second_capture_and_file_task_cannot_replace_active_capture() {
+        let mut app = ready_controller(false);
+        app.start_recording(Ok(())).unwrap();
+        app.capture_started().unwrap();
+        assert_eq!(app.start_recording(Ok(())), Err(AppError::Busy));
+        assert_eq!(
+            app.start_file_transcription("source.wav".into()),
+            Err(AppError::Busy)
+        );
+        assert_eq!(app.capture(), &CaptureState::Recording);
+    }
+
+    #[test]
+    fn preflight_errors_do_not_claim_recording() {
+        for error in [
+            PreflightError::MicrophoneUnavailable,
+            PreflightError::OutputUnavailable,
+            PreflightError::DestinationUnwritable,
+        ] {
+            let mut app = Controller::new(recording_config());
+            assert_eq!(
+                app.start_recording(Err(error)),
+                Err(AppError::Preflight(error))
+            );
+            assert_eq!(app.capture(), &CaptureState::Idle);
+            assert!(!app.is_busy());
+        }
+    }
+
+    #[test]
+    fn missing_source_selection_is_rejected_even_if_probe_says_ready() {
+        let mut app = Controller::new(AppConfig::default());
+        assert_eq!(
+            app.start_recording(Ok(())),
+            Err(AppError::Preflight(PreflightError::MicrophoneUnavailable))
+        );
+        let mut config = recording_config();
+        config.mode = RecordingMode::MicrophoneAndComputer;
+        app.configure(config).unwrap();
+        assert_eq!(
+            app.start_recording(Ok(())),
+            Err(AppError::Preflight(PreflightError::OutputUnavailable))
+        );
+    }
+
+    #[test]
+    fn live_recording_requires_validated_model_but_plain_recording_does_not() {
+        let mut config = recording_config();
+        config.live_transcription = true;
+        let mut app = Controller::new(config.clone());
+        assert_eq!(app.start_recording(Ok(())), Err(AppError::ModelUnavailable));
+        config.live_transcription = false;
+        app.configure(config).unwrap();
+        assert!(app.start_recording(Ok(())).is_ok());
+    }
+
+    #[test]
+    fn model_validation_blocks_conflicting_work_and_failure_does_not_block_plain_recording() {
+        let mut app = ready_controller(false);
+        app.start_model_validation().unwrap();
+        assert_eq!(app.start_recording(Ok(())), Err(AppError::Busy));
+        assert_eq!(
+            app.start_file_transcription("source.wav".into()),
+            Err(AppError::Busy)
+        );
+        app.finish_model_validation(Err("missing weights".into()))
+            .unwrap();
+        assert_eq!(
+            app.start_file_transcription("source.wav".into()),
+            Err(AppError::ModelUnavailable)
+        );
+        assert!(app.start_recording(Ok(())).is_ok());
+    }
+
+    #[test]
+    fn active_configuration_is_immutable_through_saving_and_finalization() {
+        let mut app = ready_controller(true);
+        let original = app.config().clone();
+        app.start_recording(Ok(())).unwrap();
+        app.capture_started().unwrap();
+        assert_eq!(
+            app.configure(AppConfig::default()),
+            Err(AppError::ConfigurationLocked)
+        );
+        assert_eq!(app.config(), &original);
+        app.stop_recording().unwrap();
+        assert_eq!(app.capture(), &CaptureState::Stopping);
+        app.capture_stopped().unwrap();
+        assert_eq!(app.capture(), &CaptureState::Saving);
+        assert_eq!(app.transcription(), &TranscriptionState::Finalizing);
+        app.finish_audio(AudioOutcome::Completed("saved.wav".into()))
+            .unwrap();
+        assert_eq!(app.start_recording(Ok(())), Err(AppError::Busy));
+        assert_eq!(
+            app.configure(AppConfig::default()),
+            Err(AppError::ConfigurationLocked)
+        );
+        app.finish_transcription(TextOutcome::Completed).unwrap();
+        assert!(app.configure(AppConfig::default()).is_ok());
+        assert_eq!(app.model(), &ModelState::NotConfigured);
+    }
+
+    #[test]
+    fn transcription_failure_never_stops_active_capture() {
+        let mut app = ready_controller(true);
+        app.start_recording(Ok(())).unwrap();
+        app.capture_started().unwrap();
+        app.finish_transcription(TextOutcome::Incomplete("worker exited".into()))
+            .unwrap();
+        assert_eq!(app.capture(), &CaptureState::Recording);
+        assert!(app.is_busy());
+        app.stop_recording().unwrap();
+        app.capture_stopped().unwrap();
+        app.finish_audio(AudioOutcome::Completed("saved.wav".into()))
+            .unwrap();
+        assert_eq!(
+            app.transcription(),
+            &TranscriptionState::Finished(TextOutcome::Incomplete("worker exited".into()))
+        );
+        assert!(!app.is_busy());
+    }
+
+    #[test]
+    fn audio_failure_and_successful_text_are_independent_results() {
+        let mut app = ready_controller(true);
+        app.start_recording(Ok(())).unwrap();
+        app.capture_started().unwrap();
+        app.stop_recording().unwrap();
+        app.capture_stopped().unwrap();
+        app.finish_audio(AudioOutcome::Failed("disk full".into()))
+            .unwrap();
+        app.finish_transcription(TextOutcome::Completed).unwrap();
+        assert_eq!(
+            app.capture(),
+            &CaptureState::Finished(AudioOutcome::Failed("disk full".into()))
+        );
+        assert_eq!(
+            app.transcription(),
+            &TranscriptionState::Finished(TextOutcome::Completed)
+        );
+    }
+
+    #[test]
+    fn file_task_is_exclusive_and_cancel_releases_it() {
+        let mut app = ready_controller(false);
+        app.start_file_transcription("input.wav".into()).unwrap();
+        assert_eq!(
+            app.start_file_transcription("another.wav".into()),
+            Err(AppError::Busy)
+        );
+        assert_eq!(app.start_recording(Ok(())), Err(AppError::Busy));
+        assert_eq!(app.start_model_validation(), Err(AppError::Busy));
+        app.finish_transcription(TextOutcome::Cancelled).unwrap();
+        assert!(!app.is_busy());
+        assert!(app.start_recording(Ok(())).is_ok());
+    }
+
+    #[test]
+    fn native_start_failure_never_claims_saved_audio_or_running_text() {
+        let mut app = ready_controller(true);
+        app.start_recording(Ok(())).unwrap();
+        app.fail_capture_start("device disappeared".into()).unwrap();
+        assert_eq!(
+            app.capture(),
+            &CaptureState::Finished(AudioOutcome::Failed("device disappeared".into()))
+        );
+        assert_eq!(app.transcription(), &TranscriptionState::Idle);
+        assert!(!app.is_busy());
+    }
+
+    #[test]
+    fn invalid_completion_events_return_errors_without_changing_state() {
+        let mut app = Controller::new(recording_config());
+        assert_eq!(app.capture_started(), Err(AppError::InvalidTransition));
+        assert_eq!(
+            app.finish_audio(AudioOutcome::Completed("fake.wav".into())),
+            Err(AppError::InvalidTransition)
+        );
+        assert_eq!(
+            app.finish_transcription(TextOutcome::Completed),
+            Err(AppError::InvalidTransition)
+        );
+        assert_eq!(
+            app.finish_model_validation(Ok(())),
+            Err(AppError::InvalidTransition)
+        );
+        assert_eq!(app.capture(), &CaptureState::Idle);
+    }
+}

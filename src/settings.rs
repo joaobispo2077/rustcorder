@@ -153,3 +153,228 @@ fn replace_with(
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{Controller, Language, ModelConfig, ModelState, RecordingMode};
+    use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestDir(PathBuf, PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            let parent = std::env::current_dir()
+                .unwrap()
+                .join("target/settings-tests");
+            fs::create_dir_all(&parent).unwrap();
+            for attempt in 0..32 {
+                let nonce = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos();
+                let path = parent.join(format!(
+                    "rustcorder-settings-{}-{nonce}-{attempt}",
+                    std::process::id()
+                ));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Self(path, parent),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("test directory creation failed: {error}"),
+                }
+            }
+            panic!("test directory names exhausted")
+        }
+
+        fn file(&self) -> PathBuf {
+            self.0.join("settings.json")
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            if self.0.parent() == Some(self.1.as_path())
+                && self
+                    .0
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("rustcorder-settings-"))
+            {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+    }
+
+    fn configured() -> Settings {
+        Settings {
+            schema_version: 1,
+            model_folder: Some("C:/modelos de voz".into()),
+            config: AppConfig {
+                mode: RecordingMode::MicrophoneAndComputer,
+                microphone_id: Some("mic-1".into()),
+                output_id: Some("headphones-2".into()),
+                save_folder: "C:/gravações".into(),
+                live_transcription: true,
+                model: Some(ModelConfig {
+                    path: "C:/modelos de voz/ggml-base.bin".into(),
+                    language: Language::Portuguese,
+                }),
+            },
+        }
+    }
+
+    #[test]
+    fn default_path_uses_current_local_app_data_without_mutating_environment() {
+        match std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
+            Some(value) => assert_eq!(
+                default_path().unwrap(),
+                PathBuf::from(value).join("rustcorder/settings.json")
+            ),
+            None => assert!(matches!(
+                default_path(),
+                Err(SettingsError::MissingLocalAppData)
+            )),
+        }
+    }
+
+    #[test]
+    fn missing_file_returns_defaults_without_creating_a_file() {
+        let dir = TestDir::new();
+        assert_eq!(load(&dir.file()).unwrap(), Settings::default());
+        assert!(!dir.file().exists());
+    }
+
+    #[test]
+    fn corrupt_json_reports_error_and_preserves_original() {
+        let dir = TestDir::new();
+        fs::write(dir.file(), b"not json").unwrap();
+        assert!(matches!(load(&dir.file()), Err(SettingsError::Json(_))));
+        assert_eq!(fs::read(dir.file()).unwrap(), b"not json");
+    }
+
+    #[test]
+    fn newer_schema_is_rejected_before_reading_unknown_config() {
+        let dir = TestDir::new();
+        let bytes = br#"{"schema_version":2,"config":"future-layout"}"#;
+        fs::write(dir.file(), bytes).unwrap();
+        assert!(matches!(
+            load(&dir.file()),
+            Err(SettingsError::UnsupportedSchema(2))
+        ));
+        assert_eq!(fs::read(dir.file()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn absent_or_noninteger_schema_is_not_silently_assumed() {
+        let dir = TestDir::new();
+        for bytes in [br#"{}"#.as_slice(), br#"{"schema_version":"1"}"#.as_slice()] {
+            fs::write(dir.file(), bytes).unwrap();
+            assert!(matches!(
+                load(&dir.file()),
+                Err(SettingsError::InvalidSchema)
+            ));
+        }
+    }
+
+    #[test]
+    fn choices_round_trip_without_readiness_or_text() {
+        let dir = TestDir::new();
+        let expected = configured();
+        save(&dir.file(), &expected).unwrap();
+        assert_eq!(load(&dir.file()).unwrap(), expected);
+        let json: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.file()).unwrap()).unwrap();
+        assert_eq!(json["config"]["model"]["language"], "pt");
+        assert_eq!(json["config"]["mode"], "microphone_and_computer");
+        for key in [
+            "readiness",
+            "ready",
+            "transcript",
+            "audio",
+            "capture",
+            "transcription",
+        ] {
+            assert!(json.get(key).is_none());
+            assert!(json["config"].get(key).is_none());
+        }
+        let app = Controller::new(load(&dir.file()).unwrap().config);
+        assert_eq!(app.model(), &ModelState::NotConfigured);
+    }
+
+    #[test]
+    fn existing_settings_are_replaced_with_a_complete_new_document() {
+        let dir = TestDir::new();
+        save(&dir.file(), &Settings::default()).unwrap();
+        save(&dir.file(), &configured()).unwrap();
+        assert_eq!(load(&dir.file()).unwrap(), configured());
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn failed_temporary_write_preserves_old_bytes_and_removes_owned_temporary() {
+        let dir = TestDir::new();
+        fs::write(dir.file(), b"old settings").unwrap();
+        let temporary = dir.0.join("chosen.tmp");
+        let result = replace_with(&dir.file(), &temporary, |file| {
+            file.write_all(b"partial")?;
+            Err(io::Error::other("injected disk-full error"))
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(dir.file()).unwrap(), b"old settings");
+        assert!(!temporary.exists());
+    }
+
+    #[test]
+    fn temporary_collision_never_overwrites_or_deletes_an_existing_file() {
+        let dir = TestDir::new();
+        let temporary = dir.0.join("chosen.tmp");
+        fs::write(dir.file(), b"old settings").unwrap();
+        fs::write(&temporary, b"another writer owns this").unwrap();
+        let result = replace_with(&dir.file(), &temporary, |file| {
+            file.write_all(b"new settings")
+        });
+        assert!(matches!(result, Err(ref error) if error.kind() == io::ErrorKind::AlreadyExists));
+        assert_eq!(fs::read(dir.file()).unwrap(), b"old settings");
+        assert_eq!(fs::read(temporary).unwrap(), b"another writer owns this");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_failed_replace_preserves_readonly_destination() {
+        let dir = TestDir::new();
+        fs::write(dir.file(), b"old settings").unwrap();
+        let original_permissions = fs::metadata(dir.file()).unwrap().permissions();
+        let mut permissions = original_permissions.clone();
+        permissions.set_readonly(true);
+        fs::set_permissions(dir.file(), permissions.clone()).unwrap();
+        let result = save(&dir.file(), &configured());
+        let remaining = fs::read(dir.file()).unwrap();
+        fs::set_permissions(dir.file(), original_permissions).unwrap();
+        assert!(matches!(result, Err(SettingsError::Io(_))));
+        assert_eq!(remaining, b"old settings");
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn unsupported_schema_is_never_saved_over_existing_data() {
+        let dir = TestDir::new();
+        fs::write(dir.file(), b"old settings").unwrap();
+        let settings = Settings {
+            schema_version: 2,
+            ..Settings::default()
+        };
+        assert!(matches!(
+            save(&dir.file(), &settings),
+            Err(SettingsError::UnsupportedSchema(2))
+        ));
+        assert_eq!(fs::read(dir.file()).unwrap(), b"old settings");
+    }
+
+    #[test]
+    fn creates_parent_directory_and_retains_unicode_paths() {
+        let dir = TestDir::new();
+        let path = dir.0.join("configuração/settings.json");
+        save(&path, &configured()).unwrap();
+        assert_eq!(load(&path).unwrap(), configured());
+    }
+}

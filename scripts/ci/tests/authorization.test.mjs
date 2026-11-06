@@ -1,9 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as release from '../release.mjs';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,realpathSync,existsSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,readFileSync,rmSync,realpathSync,existsSync} from 'node:fs';
 import path from 'node:path';
-import {execFileSync} from 'node:child_process';
 import {repoRoot,digest} from '../gates.mjs';
 
 const request = { candidate_sha256: 'a'.repeat(64), control: {run_id: 404, run_attempt: 1} };
@@ -44,11 +43,8 @@ test('artifact download verifies bounded archive bytes before safe data-only ext
   const boundary=path.join(repoRoot,'.build');mkdirSync(boundary,{recursive:true});
   const root=mkdtempSync(path.join(boundary,'artifact-test-'));
   t.after(()=>{assert.equal(path.dirname(realpathSync(root)),realpathSync(boundary));rmSync(root,{recursive:true});});
-  const source=path.join(root,'source');mkdirSync(source);writeFileSync(path.join(source,'payload.txt'),'verified fixture');
-  const script=path.join(root,'fixture.ps1');
-  writeFileSync(script,"Add-Type -AssemblyName System.IO.Compression.FileSystem\n[IO.Compression.ZipFile]::CreateFromDirectory((Join-Path $PSScriptRoot 'source'),(Join-Path $PSScriptRoot 'fixture.zip'))\n");
-  execFileSync('pwsh',['-NoProfile','-File',script],{timeout:15000,stdio:'pipe'});
-  const bytes=readFileSync(path.join(root,'fixture.zip'));
+  // Fixed payload.txt ZIP avoids a second cold PowerShell startup; extraction still uses the real adapter.
+  const bytes=Buffer.from('UEsDBBQAAAAIAAAAIQCRTtooEgAAABAAAAALAAAAcGF5bG9hZC50eHQrSy3KTMtMTVFIy6woKS1KBQBQSwECFAAUAAAACAAAACEAkU7aKBIAAAAQAAAACwAAAAAAAAAAAAAAAAAAAAAAcGF5bG9hZC50eHRQSwUGAAAAAAEAAQA5AAAAOwAAAAAA','base64');
   const frozen={id:10,name:'quality-303-1',size_in_bytes:bytes.length,api_digest:'sha256:'+digest(bytes)};
   const metadata={...frozen,digest:frozen.api_digest,expired:false,workflow_run:{id:303}};
   const api=async()=>metadata;

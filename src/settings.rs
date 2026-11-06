@@ -244,6 +244,27 @@ mod tests {
         assert!(!dir.file().exists());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn directory_path_reports_non_not_found_io_error_and_preserves_contents() {
+        let dir = TestDir::new();
+        let path = dir.file();
+        fs::create_dir(&path).unwrap();
+        let sentinel = path.join("preserve.txt");
+        fs::write(&sentinel, b"existing directory contents").unwrap();
+
+        let result = load(&path);
+
+        assert!(
+            matches!(&result, Err(SettingsError::Io(error)) if error.kind() != io::ErrorKind::NotFound),
+            "An existing directory must report its I/O error instead of loading defaults: {result:?}"
+        );
+        assert!(path.is_dir());
+        assert_eq!(fs::read(&sentinel).unwrap(), b"existing directory contents");
+        assert_eq!(fs::read_dir(&path).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
+
     #[test]
     fn corrupt_json_reports_error_and_preserves_original() {
         let dir = TestDir::new();

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "kind": "hosted",
+  "repository": "joaobispo2077/rustcorder",
+  "repository_id": 101,
+  "head_repository_id": 101,
+  "workflow_id": 202,
+  "workflow_path": ".github/workflows/ci.yml",
+  "workflow_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "event": "push",
+  "branch": "release",
+  "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "tested_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "run_id": 303,
+  "run_attempt": 1,
+  "job_id": "rust-quality",
+  "policy_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "toolchain_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+}

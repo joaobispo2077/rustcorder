@@ -414,3 +414,33 @@ preserves the reviewed atomic history and waits for its own current-head PR
 checks. These new commit groups have not yet been approved. Package/native and
 remaining acceptance tasks are still pending; a passing feature push does not
 complete the release-only lane or authorize product publication.
+
+## Promotion hold and cold-start review
+
+The user approved documentation group 41 and conditional promotion groups 42–43.
+Group 41 was committed and pushed as
+`ded51f43066c8c719667ac1aaea5ea17e4e60ba6`. No merge occurred: the latest PR checks
+hit the outer Windows job timeout. The parallel feature run exposed a redundant
+PowerShell startup timeout in ZIP fixture construction. See
+[hosted validation](ci-hosted-validation.md) for both observed failures.
+
+These four corrective groups are proposed on the same feature branch:
+
+| Group | Proposed Conventional Commit | Responsibility and files |
+| --- | --- | --- |
+| 44 | `docs(ci): record cold runner budget evidence` | Evidence and revised promotion review: docs/ci-hosted-validation.md, docs/ci-promotion-review.md, docs/commit-grouping-plan.md, specs/003-ci-quality-release/quickstart.md |
+| 45 | `build(test): remove redundant ZIP setup process` | Fixed synthetic ZIP fixture, retaining actual extraction checks: scripts/ci/tests/authorization.test.mjs |
+| 46 | `test(ci): cover cold Windows startup allowance` | Guard execution windows after observed startup: scripts/ci/tests/windows-budget.test.mjs |
+| 47 | `ci(workflows): reserve cold Windows setup time` | Outer Windows timeout limits only: .github/workflows/ci.yml, .github/workflows/mutation-full.yml |
+
+Separate cumulative indexes and patches are under the ignored
+`.build/commit-groups-cold-start/` directory. The three regression cases fail
+before group 47; push the reviewed sequence together. All 358 support tests and
+publisher boundary checks pass locally with the fixes. The engine budgets and
+quality floors are unchanged, and hosted confirmation remains pending.
+
+Groups 42–43 retain their merge identifiers and messages, but their previous
+approval covered the earlier tree. The [updated promotion review](ci-promotion-review.md)
+requests renewal for the corrected final tree after groups 44–47. The merges still
+wait for their own current-head PR checks and stop at release. No version,
+changelog release entry, tag or publication is proposed.

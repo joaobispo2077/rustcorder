@@ -170,3 +170,53 @@ above, without merging or requesting reviewers. Its PR-specific CI is a separate
 attempt; a successful feature-push run does not substitute for those checks.
 The [promotion review](ci-promotion-review.md) proposes the next controlled
 branch steps required to exercise the release-only native package lane.
+
+## Promotion checks and cold-start correction
+
+The user approved documentation group 41 and the two conditional promotion merges.
+Group 41 was committed and pushed as
+`ded51f43066c8c719667ac1aaea5ea17e4e60ba6`. Neither promotion was performed:
+the latest PR-specific checks did not pass for that head.
+
+[PR run 42241814972](https://github.com/joaobispo2077/rustcorder/actions/runs/42241814972)
+cancelled Rust light mutation after the outer job limit. GitHub's annotation for
+job 127974513261 explicitly reports the 30-minute maximum execution time.
+The job started at 15:19:58 UTC and its mutation step started at 15:33:13 UTC:
+13 minutes 15 seconds of checkout, setup and preceding work had already elapsed.
+The outer 30-minute limit therefore could not preserve the engine's full
+20-minute window. This is a job-budget failure, not evidence that cancelled
+mutants were detected. The retained job log is
+`.build/hosted-ci/42241814972/mutation-rust-job.log`.
+
+The parallel [feature run 42241804561](https://github.com/joaobispo2077/rustcorder/actions/runs/42241804561)
+completed Rust light mutation: 101 passing baseline tests, 35 detected mutants,
+zero survivors and one nonviable mutant. Its fresh execution took 14 minutes
+11 seconds. That run instead failed the support suite when PowerShell startup
+exceeded the fixture's 15-second limit while creating a tiny ZIP, before the
+download/extraction adapter was exercised. The exact failure is in
+`.build/hosted-ci/42241804561/policy/ci-support/run.stdout.log`; raw mutation
+evidence is under that run's `mutation_rust/mutation-rust/raw/` directory.
+Neither run supplies complete readiness.
+
+The proposed correction reserves cold setup and evidence-upload time in the
+outer Windows job limits: light mutation 30 to 40 minutes, native package 25 to
+40, and full mutation 70 to 80. The latter two lanes share Windows provisioning;
+their limits are adjusted from the observed setup allowance, not from a claimed
+hosted failure in those lanes. Engine limits remain 20/60 minutes and the package
+limit remains 20. Mutation floors, timeout classification and fresh-baseline
+requirements are unchanged. The ordinary Windows job caps remain below the
+45-minute warm-pipeline target; this alone does not prove pipeline timing.
+
+Three new regression cases failed against the previous workflow limits, then
+passed with the correction. The ZIP fixture now uses fixed synthetic archive
+bytes instead of launching an extra PowerShell process to construct them. The
+existing boundary test still uses real PowerShell extraction and checks payload,
+digest/size mismatch, redirect refusal and credential stripping.
+
+All 358 support tests pass with Git author settings explicitly empty, and the
+standalone publisher boundary suite passes. Raw local logs and command/exit
+records use `cold-start-final-all-node.*` and `cold-start-final-publisher.*` under
+`.build/ci-evidence/release-flow/`. These corrections require their own commit
+review and a fresh hosted PR run. Groups 42–43 remain pending; their approval
+must cover the new reviewed tree before either merge. T081–T087 remain unchecked,
+and no version, changelog release entry, product tag or publication was created.

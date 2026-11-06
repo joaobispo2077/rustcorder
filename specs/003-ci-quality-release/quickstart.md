@@ -105,10 +105,13 @@ native smoke, publisher failure/retry fixtures and both engines' light/full
 mutation profiles. See [actual measurements and limits](../../docs/ci-quality-release-validation.md).
 The initial remote inspection found only main, without protection or a
 release-publish environment. The user subsequently authorized branch creation,
-commits and pushes, and approved 40 logical commit groups. Develop/release now
+commits and pushes, and approved 41 feature commit groups. Develop/release now
 exist at the original main baseline; the feature branch's complete hosted CI and
 independently remeasured readiness pass. Draft PR #1 proposes promotion to develop.
-See [hosted results](../../docs/ci-hosted-validation.md) and the
+The conditional promotion merges remain pending after the latest PR run hit its
+outer Windows timeout. Four corrective groups await review; engine deadlines
+and quality floors are unchanged. The changed tree requires fresh PR checks and
+renewed promotion approval. See [hosted results](../../docs/ci-hosted-validation.md) and the
 [promotion review](../../docs/ci-promotion-review.md). No product tag or release
 was published. Release-only native acceptance, further timing/full runs,
 trusted-main controller adoption and actual remote enforcement remain pending.

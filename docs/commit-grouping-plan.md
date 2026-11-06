@@ -444,3 +444,28 @@ approval covered the earlier tree. The [updated promotion review](ci-promotion-r
 requests renewal for the corrected final tree after groups 44–47. The merges still
 wait for their own current-head PR checks and stop at release. No version,
 changelog release entry, tag or publication is proposed.
+
+## Completed promotions and native-placement review
+
+Groups 44–47 were approved, committed and pushed through
+`e176912791cdb84ee2fee376bb97725d84c9f1ce`. Groups 42–43 merged PR #1 to develop
+and PR #2 to release, preserving the reviewed tree. They are complete. The owner
+approved continuation to main with a bounded initial-controller exception for
+that tree, subject to successful actual native package acceptance. PR #3 remains
+draft after full-window capture failed. See [hosted validation](ci-hosted-validation.md).
+
+| Group | Proposed Conventional Commit | Responsibility and files |
+| --- | --- | --- |
+| 48 | `docs(ci): record native capture failure` | Evidence/review: docs/ci-hosted-validation.md, docs/ci-promotion-review.md, docs/commit-grouping-plan.md, specs/003-ci-quality-release/quickstart.md |
+| 49 | `test(ci): cover bounded native window placement` | Geometry/ownership regressions: scripts/ci/tests/ui-smoke.test.ps1 |
+| 50 | `ci(smoke): fit the owned window to the desktop` | Native test-window placement, retaining strict capture: scripts/ci/ui-smoke.ps1 |
+| 51 | `chore(ci): promote native smoke fix to develop` | New feature-to-develop merge preserving history |
+| 52 | `chore(ci): promote native smoke fix to release` | New develop-to-release merge preserving history |
+| 53 | `chore(ci): promote quality foundation to main` | PR #3 after fresh native acceptance and renewed exact-tree bootstrap approval |
+
+Corrective commits have separate indexes and patches under the ignored
+`.build/commit-groups-native-placement/` directory. The [promotion review](ci-promotion-review.md)
+names destination baselines and all conditions. Local support, publisher, native
+boundary and real hidden-window API checks pass. Corrected hosted native success
+remains unproved. These groups require approval before committing and include no
+version change, release entry, tag or publication.

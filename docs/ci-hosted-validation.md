@@ -220,3 +220,60 @@ records use `cold-start-final-all-node.*` and `cold-start-final-publisher.*` und
 review and a fresh hosted PR run. Groups 42–43 remain pending; their approval
 must cover the new reviewed tree before either merge. T081–T087 remain unchecked,
 and no version, changelog release entry, product tag or publication was created.
+
+## Approved promotions and first hosted native observation
+
+The user approved groups 44–47 and continuation to main. The four corrective
+commits are pushed through `e176912791cdb84ee2fee376bb97725d84c9f1ce`: 45 approved
+feature commits, tree `f8c2115cbec6c66033aec714d422cd52dfcd5763`.
+[PR CI](https://github.com/joaobispo2077/rustcorder/actions/runs/42260798735) and
+[feature-push CI](https://github.com/joaobispo2077/rustcorder/actions/runs/42260789497)
+passed. Raw PR receipts were independently hash-verified and remeasured.
+
+[PR #1](https://github.com/joaobispo2077/rustcorder/pull/1) merged to develop as
+`3dc4301ec3fa5a0ee491733c3ddc03be1b078226`.
+[PR #2](https://github.com/joaobispo2077/rustcorder/pull/2) merged to release as
+`26d2742e5d9b80da77f54f4c51af21b300e3662c` after its latest PR and associated
+develop-push checks passed. Both merge trees exactly match the reviewed tree and
+preserve atomic history. Verification records are under `.build/pr-reviewed/`.
+Main remains at the original baseline.
+
+The owner approved a one-time initial-controller bootstrap exception for that
+tree: the publisher must be installed on main before the first publication.
+[PR #3](https://github.com/joaobispo2077/rustcorder/pull/3) targets main. Its policy
+artifact confirms 358 passing support tests and successful actionlint; the only
+policy failure is HTTP 404 for the absent latest release. The future published-
+candidate rule stays intact. Successful native acceptance is still required.
+
+The actual [release-push run](https://github.com/joaobispo2077/rustcorder/actions/runs/42268331642)
+failed package acceptance. Fresh Release assembly and the 0.1.0 version probe
+succeeded. The real app exposed a PID-bound UIA tree, then capture failed because
+its window was outside the capturable desktop: left=104, top=104, width=1040,
+height=807. The original error did not retain desktop dimensions; do not infer a
+specific hosted resolution. The tree is written after the navigation loop, but
+no complete native success or normal-close proof was certified. Retained failure
+evidence is under `.build/hosted-ci/42268331642/package/package/`, including
+worker stderr, the accessibility tree and incomplete native-smoke.json.
+
+Desktop capability checks passed before launch. The proposed fix fits only the
+test-owned window to its monitor's working area, waits within the existing
+worker deadline for actual UIA bounds to fit, and then performs navigation and
+full-window capture. Product sizing, display mode, strict containment, PID/HWND
+checks, landmarks, normal close, settings isolation and timeouts remain intact.
+The native move rechecks real HWND ownership with
+[GetWindowThreadProcessId](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowthreadprocessid)
+before [MoveWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-movewindow).
+
+Regression cases fail before the helper exists, then pass for a representative
+smaller working area, a larger desktop, negative monitor origins, foreign PID
+and unusable-area refusal. A real local hidden-window check also passes native
+move/resize and foreign-PID refusal; this is not hosted app acceptance.
+All 358 support tests, publisher boundaries and native-smoke boundaries pass.
+Support logs use `native-placement-final-*` under
+`.build/ci-evidence/release-flow/`; the real API check is
+`.build/check-owned-window-placement.ps1`.
+
+The correction requires new commit review and fresh hosted proof. No main merge
+occurred, and T081–T087 remain unchecked. The previous bootstrap approval covers
+the earlier tree; the corrected tree needs renewed approval before promotion.
+No version, release entry, product tag or publication was created.

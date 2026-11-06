@@ -51,6 +51,20 @@ try {
     Assert-SmokeRejected { Assert-SmokeDesktop $taskMissing } 'Service session accepted as interactive desktop.'
 
     Assert-SmokeWindow (New-TestWindow) 314
+    Add-Type -AssemblyName System.Drawing
+    $taskHostedWindow = New-TestWindow
+    $taskHostedWindow.bounds = @{ left = 104; top = 104; width = 1040; height = 807 }
+    $taskDesktop = [Drawing.Rectangle]::new(0, 0, 1024, 728)
+    $taskPlacement = Get-SmokeCapturePlacement $taskHostedWindow 314 $taskDesktop
+    Assert-SmokeTest ($taskDesktop.Contains($taskPlacement)) 'Hosted default window must fit the real desktop before capture.'
+    Assert-SmokeTest ($taskPlacement.Width -eq 992 -and $taskPlacement.Height -eq 696) 'Fit must reserve frame room without enlarging the window.'
+    $taskLargeDesktop = [Drawing.Rectangle]::new(0, 0, 1920, 1040)
+    $taskUnchanged = Get-SmokeCapturePlacement $taskHostedWindow 314 $taskLargeDesktop
+    Assert-SmokeTest ($taskUnchanged -eq [Drawing.Rectangle]::new(104,104,1040,807)) 'A fully visible window must retain its geometry.'
+    $taskLeftDesktop = [Drawing.Rectangle]::new(-1280, -100, 1024, 728)
+    Assert-SmokeTest ($taskLeftDesktop.Contains((Get-SmokeCapturePlacement $taskHostedWindow 314 $taskLeftDesktop))) 'Negative monitor origins must be preserved.'
+    Assert-SmokeRejected { Get-SmokeCapturePlacement $taskHostedWindow 315 $taskDesktop } 'Placement accepted another process window.'
+    Assert-SmokeRejected { Get-SmokeCapturePlacement $taskHostedWindow 314 ([Drawing.Rectangle]::new(0,0,32,32)) } 'A desktop with no bounded capture area was accepted.'
     $taskStartupPane=New-TestWindow
     $taskStartupPane.title=''
     $taskStartupPane.bounds=@{left=0;top=0;width=16;height=16}

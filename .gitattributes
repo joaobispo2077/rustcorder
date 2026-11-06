@@ -1,0 +1,10 @@
+# Stable source/config bytes for Windows producers and Linux evidence collectors.
+*.json text eol=lf
+*.mjs text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.ps1 text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+Cargo.lock text eol=lf
+assets/LICENSE.silero-vad.txt -text

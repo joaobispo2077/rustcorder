@@ -142,7 +142,7 @@ test('release flow joins confirmed source, final evidence, approval and immutabl
     confirmation: { completion: true }, control, date: '2026-11-06', metadata });
   t.after(() => { assert.equal(path.dirname(realpathSync(prepared.scratch)), boundary); rmSync(prepared.scratch, { recursive: true }); });
   const objectEnv = { ...process.env, GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(prepared.scratch, 'objects') };
-  const git = (args, input) => execFileSync('git', args, { cwd: repo.root, env: objectEnv, input, encoding: 'utf8' }).trim();
+  const git = repo.git;
   const pack = execFileSync('git', ['pack-objects', '--revs', '--stdout'], {
     cwd: repo.root, env: objectEnv, input: prepared.manifest.expected_tree + '\n',
   });
@@ -173,6 +173,7 @@ test('release flow joins confirmed source, final evidence, approval and immutabl
   const request = { repository: context.repository, run_id: 304, run_attempt: 1, source_sha: finalSha };
 
   await t.test('prepared tree has one exact source parent and only metadata changes', () => {
+    assert.equal(git(['show', '-s', '--format=%an <%ae>', finalSha]), 'CI fixture <ci@example.invalid>');
     assert.ok(release.verifyCandidate(prepared.manifest, { sha: finalSha, tree_sha: scope.package.tree_sha,
       parents: git(['rev-list', '--parents', '-n', '1', finalSha]).split(' ').slice(1), version: scope.package.version }));
     assert.deepEqual(git(['diff-tree', '--no-commit-id', '-r', '--name-only', source.sha, finalSha]).split('\n').sort(), ['CHANGELOG.md', 'Cargo.lock', 'Cargo.toml']);

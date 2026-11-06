@@ -315,3 +315,34 @@ Connect the completed adapters last, keeping hosted orchestration separate from 
 - `.github/workflows/ci.yml`
 - `.github/workflows/mutation-full.yml`
 - `.github/workflows/release.yml`
+
+## Approved execution: 2026-11-06
+
+The user approved the sequence above. All 27 commits were created in that order
+on `feature/ci-quality-release` and pushed, ending at
+`aa8d19c47405bb67529602b653b7668e2eb4d9a0`. The final tree is
+`998b94b52f307b380f5c5f60448924027b19ebd0`, exactly matching the reviewed staged
+tree. Main and all product tags were preserved. The user-authorized develop and
+release branches were subsequently created at the original main baseline to
+establish the requested promotion path. First hosted results and T080 evidence
+are recorded in [validation](ci-quality-release-validation.md).
+
+## Follow-up groups awaiting approval
+
+The next task, T080, added the joined release-flow fixture and exposed a
+fresh-process publication-receipt ordering bug. The following four groups keep
+documentation, fixture infrastructure, acceptance tests and the one-line
+implementation fix separate. They are proposed for the existing feature branch.
+
+| Order | Proposed Conventional Commit | Responsibility and files |
+| --- | --- | --- |
+| 28 | `docs(ci): record joined release-flow acceptance` | Verification/adoption evidence: docs/ci-quality-release-validation.md, docs/commit-grouping-plan.md, specs/003-ci-quality-release/tasks.md |
+| 29 | `build(test): add isolated release-flow backend` | Synthetic package and network-free publisher backend: scripts/ci/tests/release-flow.fixture.ps1 |
+| 30 | `test(release): join candidate and retry acceptance` | Real-adapter acceptance and cross-process retry regression: scripts/ci/tests/release-flow.test.mjs |
+| 31 | `fix(release): stabilize publication receipt order` | Deterministic asset field order: scripts/ci/publish.ps1 |
+
+Each follow-up has a separate cumulative index and review patch under the ignored
+`.build/commit-groups-followup/` directory. No follow-up commit or push is approved
+by the previous 27-group approval. Test and fixture commits precede the fix, so
+the regression is intentionally red until the final group; push the complete
+reviewed sequence together. No release entry or tag execution is proposed.

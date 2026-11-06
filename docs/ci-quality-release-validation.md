@@ -366,3 +366,67 @@ data-only remeasurement. None of these local results authorizes a release or
 substitutes for the final hosted/integration acceptance tasks T080–T087.
 Their local security-review and guidance components are prepared; final review
 must include any changes required by actual hosted adoption.
+
+### 2026-11-06: approved commits and joined release-flow acceptance
+
+The user explicitly authorized branch creation, commits and pushes, then approved
+the 27 proposed groups in `docs/commit-grouping-plan.md`. They were committed on
+`feature/ci-quality-release` and pushed through commit
+`aa8d19c47405bb67529602b653b7668e2eb4d9a0`. Their cumulative tree exactly matches
+the reviewed staging snapshots. All 103 working-file hashes were preserved;
+main remains at `8b200d21c07d668e2e492c68139970031b923c65`. No product version,
+changelog release entry, tag or published release was changed. Earlier statements
+about no staging or branch mutations describe the preceding implementation phase.
+
+T080 is now complete. `scripts/ci/tests/release-flow.test.mjs` joins the actual
+proposal/preparation, candidate schema, frozen source inventory, package archive
+verification, both mutation normalizers, raw-evidence collection, report,
+readiness, reviewer approval and publisher adapters. Its companion PowerShell
+fixture provides synthetic package/native observations and an in-memory API
+backend persisted only inside the test's owned temporary directory. Tokens are
+cleared for child fixtures; the default publication transport throws if reached.
+No real publication remote, product tag or application version is mutated.
+
+The fixture proves:
+
+- The final commit has exactly the prepared source parent/tree and only changes
+  Cargo.toml, Cargo.lock and CHANGELOG.md in the isolated bare repository.
+- All 18 gate receipts pass remeasurement and join a ready report. Each of the
+  seven named final jobs is independently mandatory in source-attempt validation.
+- Evidence from the source commit cannot certify its prepared final commit;
+  changed raw bytes, missing mutation outcomes and newer attempts block acceptance.
+- A stale candidate/control approval is refused by the real publisher before any
+  fixture API operation.
+- An interruption after the first stored upload leaves a draft. A fresh process
+  resumes with the same annotated-tag identity and existing asset bytes; another
+  retry retains the same completed publication receipt without rewriting it.
+
+The fresh-process retry initially failed even though every receipt value was
+identical: asset hash-table keys changed JSON serialization order. The fix uses
+an ordered asset dictionary when producing the receipt, preserving exact-byte
+conflict detection. The retained failing log shows asset keys changing from
+`id,name,sha256,bytes` to `sha256,id,name,bytes`. The focused fixture then passed
+all seven reported tests; the complete Node support population passed 351/351
+with zero skipped/cancelled tests, and existing publisher boundary checks passed.
+Evidence is retained under `.build/ci-evidence/release-flow/` in
+`red-receipt-order.*`, `green-receipt-order.*`, `all-node.*` and `publisher.*`.
+The new seven reported tests are one integration fixture with six subtests,
+not seven new cheap unit tests. Crossing the real Git, ZIP, JSON and PowerShell
+boundaries is the purpose of T080 and is a justified integration exception.
+
+The first actual hosted run is
+[CI 42158351603](https://github.com/joaobispo2077/rustcorder/actions/runs/42158351603),
+attempt 1, at the pushed head above. Its policy support tests passed 344/344 and
+workflow syntax passed. Promotion validation failed because `origin/develop`
+did not yet exist. The user-authorized develop and release branches were then
+created and pushed at the unchanged main baseline. This resolves that missing
+configuration for a new checkout; it does not retroactively make attempt 1 pass.
+The hosted Node light mutation job passed at 382/680 detected (56.18%), with 298
+survivors and no nonviable outcomes, in 277,021 ms (4.62 minutes). Its downloaded
+receipt and raw outputs passed independent hash verification and remeasurement.
+The Windows quality and Rust light
+mutation jobs were still running at this snapshot. Package smoke is correctly
+excluded on this feature push. A new complete attempt is required after the
+branch configuration change; partial reruns cannot substitute evidence from a
+different attempt. These hosted results do not include the uncommitted T080
+fixture or receipt fix. T081–T087 remain unproved and unchecked.

@@ -1,0 +1,46 @@
+id: ui-native-boundary
+snapshots:
+  "fn x() { crate::transcription::worker::run(); }":
+    labels:
+    - source: crate::transcription::worker::run
+      style: primary
+      start: 9
+      end: 42
+  "fn x() { windows::core::initialize_mta(); }":
+    labels:
+    - source: windows
+      style: primary
+      start: 9
+      end: 16
+  "use crate::{transcription::{worker as native_worker}};":
+    labels:
+    - source: worker
+      style: primary
+      start: 28
+      end: 34
+    - source: use crate::{transcription::{worker as native_worker}};
+      style: secondary
+      start: 0
+      end: 54
+  "use super::transcription::worker as native_worker;":
+    labels:
+    - source: worker
+      style: primary
+      start: 26
+      end: 32
+    - source: use super::transcription::worker as native_worker;
+      style: secondary
+      start: 0
+      end: 50
+  "use wasapi::{Device, AudioClient as Client};":
+    labels:
+    - source: wasapi
+      style: primary
+      start: 4
+      end: 10
+  "use whisper_rs::WhisperContext;":
+    labels:
+    - source: whisper_rs
+      style: primary
+      start: 4
+      end: 14

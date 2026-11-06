@@ -1,0 +1,11 @@
+# All mutation-eligible behavior in this declared testable core. Native/device
+# adapters and UI draw code have separate integration/native acceptance gates.
+examine_globs = ["src/app.rs", "src/settings.rs", "src/transcription/transcript.rs", "src/transcription/live.rs", "src/recording.rs", "src/models.rs", "src/transcription/jobs.rs"]
+additional_cargo_args = ["--locked", "--offline", "--lib"]
+additional_cargo_test_args = ["--", "--test-threads=4"]
+copy_target = true
+copy_vcs = false
+gitignore = true
+minimum_test_timeout = 30
+timeout_multiplier = 3.0
+cap_lints = true

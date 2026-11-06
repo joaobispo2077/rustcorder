@@ -6,7 +6,7 @@ Transcription runs locally with whisper.cpp GGML base/small models and a bundled
 
 ## Run and build
 
-The current portable preview is `dist/rustcorder-windows-preview-vad/rustcorder.exe`.
+The current portable preview is `dist/rustcorder-windows-layout-preview-final/rustcorder.exe`.
 Keep its bundled speech detector and license files beside it. For development
 transcription checks, select this repository's `models` folder in the app.
 

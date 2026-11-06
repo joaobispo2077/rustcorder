@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "note": "Synthetic fixtures only; IDs and hashes are not hosted execution evidence.",
+  "valid": {
+    "gate": "format",
+    "status": "pass",
+    "applicable": true,
+    "required": true,
+    "exit_code": 0,
+    "completed": true,
+    "duration_ms": 12,
+    "measurements": null
+  },
+  "invalid": [
+    { "gate": "unit", "status": "pass", "completed": false },
+    { "gate": "coverage", "status": "pass", "measurements": { "covered": 0, "total": 0 } },
+    { "gate": "unit", "status": "pass", "counts": { "passed": true } }
+  ]
+}

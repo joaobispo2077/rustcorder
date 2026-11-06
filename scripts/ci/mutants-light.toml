@@ -1,0 +1,11 @@
+# Critical decisions; the CLI always runs an unmutated baseline first.
+examine_globs = ["src/app.rs", "src/settings.rs", "src/transcription/transcript.rs", "src/transcription/live.rs"]
+examine_re = ["close_plan|is_busy|require_idle|start_recording|load|replace_with|is_incomplete|finish|schedule"]
+additional_cargo_args = ["--locked", "--offline", "--lib"]
+additional_cargo_test_args = ["--", "--test-threads=4"]
+copy_target = true
+copy_vcs = false
+gitignore = true
+minimum_test_timeout = 30
+timeout_multiplier = 3.0
+cap_lints = true

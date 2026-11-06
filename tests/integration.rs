@@ -18,3 +18,6 @@ mod live_recording;
 mod microphone_recording;
 #[path = "integration/transcription_actions.rs"]
 mod transcription_actions;
+
+#[path = "integration/binary_identity.rs"]
+mod binary_identity;

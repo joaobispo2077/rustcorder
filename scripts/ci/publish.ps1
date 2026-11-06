@@ -307,7 +307,7 @@ function Invoke-CiPublish {
         } else { $taskAsset=$taskMatches[0] }
         Assert-PublishAsset $taskAsset $taskFile $Candidate.repository
         Assert-PublishAssetBytes $Transport $taskPrefix $taskAsset $taskFile
-        [void]$taskVerified.Add(@{id=$taskAsset.id;name=$taskFile.name;bytes=$taskFile.bytes;sha256=$taskFile.sha256})
+        [void]$taskVerified.Add([ordered]@{id=$taskAsset.id;name=$taskFile.name;bytes=$taskFile.bytes;sha256=$taskFile.sha256})
     }
     $taskLatest=Get-PublishPages $Transport ($taskPrefix+'/releases/'+$taskRelease.id+'/assets')
     if ($taskLatest.Count -ne $taskVerified.Count) { throw 'Release attachment inventory changed before publication.' }

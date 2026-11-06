@@ -57,6 +57,8 @@ function Resolve-VerifiedVadAsset([string]$AssetPath, [string]$ExpectedSha256) {
     return $resolved
 }
 
+if ($MyInvocation.InvocationName -eq '.') { return }
+
 if ($SelfCheck) {
     $valid = Resolve-PackageDestination ('self-check-valid-' + [Guid]::NewGuid().ToString('N'))
     if (-not $valid.StartsWith($taskDist + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {

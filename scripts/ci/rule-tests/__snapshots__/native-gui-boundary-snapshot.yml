@@ -1,0 +1,20 @@
+id: native-gui-boundary
+snapshots:
+  "fn x() { rfd::FileDialog::new(); }":
+    labels:
+    - source: rfd
+      style: primary
+      start: 9
+      end: 12
+  "use eframe::egui;":
+    labels:
+    - source: eframe
+      style: primary
+      start: 4
+      end: 10
+  "use egui::{Ui, Context as Ctx};":
+    labels:
+    - source: egui
+      style: primary
+      start: 4
+      end: 8

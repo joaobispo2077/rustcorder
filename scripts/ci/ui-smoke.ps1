@@ -73,6 +73,17 @@ function Assert-SmokeControls([object[]]$Controls, $Window) {
     }
 }
 
+function Get-SmokeCapturePlacement($Window, [int]$OwnProcessId, [Drawing.Rectangle]$WorkingArea) {
+    Assert-SmokeWindow $Window $OwnProcessId
+    if ($WorkingArea.Width -le 32 -or $WorkingArea.Height -le 32) { throw 'Desktop working area cannot contain a bounded native window.' }
+    $taskRectangle = [Drawing.Rectangle]::new([int][Math]::Floor($Window.bounds.left), [int][Math]::Floor($Window.bounds.top),
+        [int][Math]::Ceiling($Window.bounds.width), [int][Math]::Ceiling($Window.bounds.height))
+    if ($WorkingArea.Contains($taskRectangle)) { return $taskRectangle }
+    # Reserve room for native frame differences while fitting only the test-owned window.
+    return [Drawing.Rectangle]::new($WorkingArea.Left + 16, $WorkingArea.Top + 16,
+        [Math]::Min($taskRectangle.Width, $WorkingArea.Width - 32), [Math]::Min($taskRectangle.Height, $WorkingArea.Height - 32))
+}
+
 function Assert-SmokeClose([bool]$Requested, [bool]$Exited, [int]$ExitCode) {
     if (-not $Requested -or -not $Exited -or $ExitCode -ne 0) { throw 'Packaged application did not close normally within the bound.' }
 }
@@ -142,6 +153,17 @@ namespace RustcorderCi {
         private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool CloseDesktop(IntPtr desktop);
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool MoveWindow(IntPtr window, int x, int y, int width, int height, bool repaint);
+        public static void PlaceOwnedWindow(IntPtr window, int ownProcessId, int x, int y, int width, int height) {
+            uint observed;
+            if (ownProcessId < 1 || GetWindowThreadProcessId(window, out observed) == 0 || observed != ownProcessId)
+                throw new InvalidOperationException("Cannot move a foreign or missing native window.");
+            if (!MoveWindow(window, x, y, width, height, true))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        }
         public static bool Available() {
             var desktop = OpenInputDesktop(0, false, 0x0001);
             if (desktop == IntPtr.Zero) return false;
@@ -267,6 +289,25 @@ function Wait-SmokeElement($Root, [string]$Name, [int]$OwnProcessId, [DateTime]$
     throw ('Native screen/control was not reached: ' + $Name)
 }
 
+function Set-SmokeCaptureWindow($Element, [int]$OwnProcessId, [DateTime]$Deadline) {
+    $taskBefore = Get-SmokeWindowData $Element
+    Assert-SmokeWindow $taskBefore $OwnProcessId
+    $taskArea = [Windows.Forms.Screen]::FromHandle([IntPtr]$taskBefore.handle).WorkingArea
+    $taskPlacement = Get-SmokeCapturePlacement $taskBefore $OwnProcessId $taskArea
+    [RustcorderCi.InputDesktop]::PlaceOwnedWindow([IntPtr]$taskBefore.handle, $OwnProcessId,
+        $taskPlacement.X, $taskPlacement.Y, $taskPlacement.Width, $taskPlacement.Height)
+    do {
+        $taskAfter = Get-SmokeWindowData $Element
+        Assert-SmokeWindow $taskAfter $OwnProcessId
+        if ($taskAfter.handle -ne $taskBefore.handle) { throw 'Native window identity changed during placement.' }
+        $taskObserved = [Drawing.Rectangle]::new([int][Math]::Floor($taskAfter.bounds.left), [int][Math]::Floor($taskAfter.bounds.top),
+            [int][Math]::Ceiling($taskAfter.bounds.width), [int][Math]::Ceiling($taskAfter.bounds.height))
+        if ($taskArea.Contains($taskObserved)) { return }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $Deadline)
+    throw ('Owned native window could not fit the capturable desktop within the bound: window={0}; working area={1}.' -f $taskObserved, $taskArea)
+}
+
 function Save-SmokeScreenshot($Window, [string]$Path) {
     $taskLeft = [int][Math]::Floor($Window.bounds.left)
     $taskTop = [int][Math]::Floor($Window.bounds.top)
@@ -274,7 +315,7 @@ function Save-SmokeScreenshot($Window, [string]$Path) {
     $taskHeight = [int][Math]::Ceiling($Window.bounds.height)
     $taskScreen = [Windows.Forms.SystemInformation]::VirtualScreen
     $taskRectangle = New-Object Drawing.Rectangle $taskLeft, $taskTop, $taskWidth, $taskHeight
-    if (-not $taskScreen.Contains($taskRectangle)) { throw 'Native window is outside the capturable desktop.' }
+    if (-not $taskScreen.Contains($taskRectangle)) { throw ('Native window is outside the capturable desktop: window={0}; desktop={1}.' -f $taskRectangle, $taskScreen) }
     $taskImage = New-Object Drawing.Bitmap $taskWidth, $taskHeight
     $taskGraphics = [Drawing.Graphics]::FromImage($taskImage)
     try {
@@ -306,6 +347,7 @@ function Invoke-SmokeCore([string]$Path, [string]$Hash, [string]$ProductVersion,
         $taskOut = $taskProcess.StandardOutput.ReadToEndAsync()
         $taskErr = $taskProcess.StandardError.ReadToEndAsync()
         $taskWindow = Wait-SmokeWindow $taskProcess $taskDeadline
+        Set-SmokeCaptureWindow $taskWindow $taskProcess.Id $taskDeadline
         $taskTree = Get-SmokeTree $taskWindow $taskProcess.Id
         Assert-SmokeControls $taskTree.nodes $taskTree.window
         $taskNavigation = @()

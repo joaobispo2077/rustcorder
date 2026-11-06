@@ -1,0 +1,16 @@
+{
+  "id": "ui-native-boundary",
+  "valid": [
+    "use crate::transcription::WorkerProcess;",
+    "fn x() { let text = \"whisper_rs::WhisperContext\"; }",
+    "// wasapi::Device\nfn x() {}"
+  ],
+  "invalid": [
+    "use whisper_rs::WhisperContext;",
+    "use wasapi::{Device, AudioClient as Client};",
+    "fn x() { windows::core::initialize_mta(); }",
+    "fn x() { crate::transcription::worker::run(); }",
+    "use crate::{transcription::{worker as native_worker}};",
+    "use super::transcription::worker as native_worker;"
+  ]
+}

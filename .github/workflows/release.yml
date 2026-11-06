@@ -1,0 +1,204 @@
+name: Controlled release
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - release
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options:
+          - preview
+          - prepare
+          - publish
+        default: preview
+        required: true
+        description: Preview, confirmed patch preparation, or protected publication
+      source_run_id:
+        type: string
+        required: false
+        description: Successful release-push CI run ID
+      source_run_attempt:
+        type: string
+        required: false
+        default: "1"
+        description: Exact latest source CI attempt
+      source_sha:
+        type: string
+        required: false
+        description: Full release branch commit SHA
+      proposal_artifact_id:
+        type: string
+        required: false
+        description: "Prepare: immutable reviewed proposal artifact ID"
+      reviewed_proposal_sha256:
+        type: string
+        required: false
+        description: "Prepare: reviewed proposal SHA-256"
+      completion_confirmed:
+        type: boolean
+        default: false
+        description: "Prepare: explicitly confirm the task is finished and working"
+      bootstrap_confirmed:
+        type: boolean
+        default: false
+        description: "Prepare: explicitly confirm manifest version as first release"
+      preparation_artifact_id:
+        type: string
+        required: false
+        description: "Publish: immutable confirmed preparation artifact ID"
+permissions:
+  contents: read
+  actions: read
+jobs:
+  preview:
+    name: Preview release version
+    if: |-
+      github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.id == github.repository_id) ||
+       (github.event_name == 'workflow_dispatch' && inputs.mode == 'preview'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+          cache: npm
+          cache-dependency-path: scripts/ci/package-lock.json
+      - run: npm ci --prefix scripts/ci --omit=peer --ignore-scripts
+      - name: Calculate read-only proposal from exact source evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: node scripts/ci/release.mjs preview --out .build/release/proposal.json
+      - name: Show proposal
+        run: cat .build/release/proposal.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: proposal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/release/proposal.*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+  prepare:
+    name: Prepare confirmed release patch
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.mode == 'prepare'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+      - run: npm ci --prefix scripts/ci --omit=peer --ignore-scripts
+      - name: Provision pinned Cargo environment
+        shell: pwsh
+        run: ./scripts/ci/setup-windows.ps1 -Install
+      - name: Prepare isolated patch after explicit completion confirmation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROPOSAL_ARTIFACT_ID: ${{ inputs.proposal_artifact_id }}
+          REVIEWED_PROPOSAL_SHA256: ${{ inputs.reviewed_proposal_sha256 }}
+          COMPLETION_CONFIRMED: ${{ inputs.completion_confirmed }}
+          BOOTSTRAP_CONFIRMED: ${{ inputs.bootstrap_confirmed }}
+        run: node scripts/ci/release.mjs prepare --out .build/preparation
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: preparation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/preparation
+          if-no-files-found: error
+          retention-days: 14
+  preflight:
+    name: Freeze publication request
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.mode == 'publish'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      candidate_sha256: ${{ steps.freeze.outputs.candidate_sha256 }}
+      artifact_id: ${{ steps.candidate.outputs.artifact-id }}
+      artifact_digest: sha256:${{ steps.candidate.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+      - run: npm ci --prefix scripts/ci --omit=peer --ignore-scripts
+      - name: Validate exact prepared commit and final CI evidence
+        id: freeze
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PREPARATION_ARTIFACT_ID: ${{ inputs.preparation_artifact_id }}
+        run: node scripts/ci/release.mjs preflight --out .build/candidate
+      - name: Show frozen version, commit and approval text
+        run: cat .build/candidate/candidate.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        id: candidate
+        with:
+          name: candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/candidate
+          if-no-files-found: error
+          retention-days: 14
+  publish:
+    name: Approve and publish exact candidate
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.mode == 'publish'
+    needs:
+      - preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    environment:
+      name: release-publish
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    concurrency:
+      group: release-publication-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+      - run: npm ci --prefix scripts/ci --omit=peer --ignore-scripts
+      - name: Revalidate approval and publish frozen bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.preflight.outputs.artifact_id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.preflight.outputs.artifact_digest }}
+          CANDIDATE_SHA256: ${{ needs.preflight.outputs.candidate_sha256 }}
+        run: node scripts/ci/release.mjs publish
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/release-approved-*/candidate/publication.json
+          if-no-files-found: warn
+          retention-days: 14

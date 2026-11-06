@@ -1,0 +1,12 @@
+{
+  "id": "native-gui-boundary",
+  "valid": [
+    "use crate::app::Controller;",
+    "fn x() { let text = \"egui::Ui\"; }"
+  ],
+  "invalid": [
+    "use eframe::egui;",
+    "use egui::{Ui, Context as Ctx};",
+    "fn x() { rfd::FileDialog::new(); }"
+  ]
+}

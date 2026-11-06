@@ -1,0 +1,12 @@
+{
+  "format": [
+    "rust"
+  ],
+  "minLines": 5,
+  "minTokens": 50,
+  "reporters": [
+    "json"
+  ],
+  "absolute": true,
+  "gitignore": false
+}

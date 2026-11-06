@@ -57,6 +57,106 @@ function Resolve-VerifiedVadAsset([string]$AssetPath, [string]$ExpectedSha256) {
     return $resolved
 }
 
+function Assert-PackageVersionProbe($Probe, [string]$ExpectedVersion) {
+    if ($ExpectedVersion -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+        throw 'Package product version must be stable SemVer.'
+    }
+    if ($Probe.timed_out -isnot [bool] -or $Probe.timed_out -or
+        ($Probe.exit_code -isnot [int] -and $Probe.exit_code -isnot [long]) -or $Probe.exit_code -ne 0 -or
+        $Probe.stdout -isnot [string] -or $Probe.stderr -isnot [string] -or
+        $Probe.stdout.Trim() -cne ('rustcorder ' + $ExpectedVersion) -or $Probe.stderr.Trim()) {
+        throw 'Packaged executable did not report the expected built version within the bound.'
+    }
+}
+
+function Get-PackageExecutableIdentity([string]$Executable, [string]$ExpectedVersion) {
+    . (Join-Path $PSScriptRoot 'ci\ci.ps1')
+    . (Join-Path $PSScriptRoot 'ci\setup-windows.ps1')
+    $taskInfo = Get-Item -LiteralPath $Executable -Force
+    if ($taskInfo.PSIsContainer -or $taskInfo.Extension -ine '.exe' -or ($taskInfo.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'Package version probe requires its real executable snapshot.'
+    }
+    $taskSnapshotHash = Get-FileSha256 $taskInfo.FullName
+    $taskProbeRoot = Assert-CiOwnedDirectory (Join-Path $taskRoot ('.build\package-version-' + [Guid]::NewGuid().ToString('N')))
+    if (Test-Path -LiteralPath $taskProbeRoot) { throw 'Package version probe requires fresh settings.' }
+    [IO.Directory]::CreateDirectory($taskProbeRoot) | Out-Null
+    $taskProbe = Invoke-CiChild -FilePath $taskInfo.FullName -Arguments @('--version') -WorkingDirectory $taskInfo.DirectoryName -TimeoutSeconds 5 -Environment @{ LOCALAPPDATA = $taskProbeRoot }
+    Write-CiUtf8 (Join-Path $taskProbeRoot 'stdout.log') $taskProbe.stdout
+    Write-CiUtf8 (Join-Path $taskProbeRoot 'stderr.log') $taskProbe.stderr
+    Assert-PackageVersionProbe $taskProbe $ExpectedVersion
+    if ((Get-FileSha256 $taskInfo.FullName) -cne $taskSnapshotHash) { throw 'Executable snapshot changed during its version probe.' }
+    return [pscustomobject]@{ version = $ExpectedVersion; executable_sha256 = $taskSnapshotHash }
+}
+
+function Get-PackageSourceIdentity {
+    $taskSourceSha = (& git -C $taskRoot rev-parse --verify HEAD | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $taskSourceSha -cnotmatch '^[a-f0-9]{40}$') { throw 'Cannot bind the package to its actual source commit.' }
+    $taskSourceTree = (& git -C $taskRoot rev-parse --verify 'HEAD^{tree}' | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $taskSourceTree -cnotmatch '^[a-f0-9]{40}$') { throw 'Cannot bind the package to its actual source tree.' }
+    $taskChanges = @(& git -C $taskRoot status --porcelain --untracked-files=normal)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot determine the package source dirty state.' }
+    return [pscustomobject]@{ sha = $taskSourceSha; tree_sha = $taskSourceTree; dirty = $taskChanges.Count -gt 0 }
+}
+
+function Get-PackageSourceVerification($Before, $After, [bool]$Skipped, [bool]$Built) {
+    foreach ($taskSnapshot in @($Before, $After)) {
+        if ($taskSnapshot.sha -isnot [string] -or $taskSnapshot.sha -cnotmatch '^[a-f0-9]{40}$' -or
+            $taskSnapshot.tree_sha -isnot [string] -or $taskSnapshot.tree_sha -cnotmatch '^[a-f0-9]{40}$' -or $taskSnapshot.dirty -isnot [bool]) {
+            throw 'Invalid observed source context.'
+        }
+    }
+    if ($Before.sha -cne $After.sha -or $Before.tree_sha -cne $After.tree_sha -or $Before.dirty -ne $After.dirty) {
+        throw 'Source commit, tree or dirty state changed during package assembly.'
+    }
+    if ($Skipped) {
+        if ($Built) { throw 'A build cannot be both skipped and executed.' }
+        return 'skipped-build'
+    }
+    if (-not $Built) { throw 'Source verification requires a successful build command.' }
+    if ($Before.dirty) { return 'dirty-build' }
+    return 'fresh-clean-build'
+}
+
+function Get-PackageFileInventory([string]$PackageDirectory, [switch]$AssemblyInProgress) {
+    $taskBase = [IO.Path]::GetFullPath($PackageDirectory)
+    if (-not $taskBase.StartsWith($taskRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $taskBase -PathType Container)) {
+        throw 'Package inventory must remain in this checkout.'
+    }
+    $taskAncestor = $taskBase
+    while ($taskAncestor.Length -ge $taskRoot.Length) {
+        if ((Get-Item -LiteralPath $taskAncestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected package inventory roots are forbidden.' }
+        $taskAncestor = Split-Path -Parent $taskAncestor
+    }
+    $taskFiles = New-Object 'System.Collections.Generic.List[string]'
+    function Add-PackageFiles([string]$Directory) {
+        foreach ($taskItem in Get-ChildItem -LiteralPath $Directory -Force) {
+            if ($taskItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected package members are forbidden.' }
+            if ($taskItem.PSIsContainer) { Add-PackageFiles $taskItem.FullName; continue }
+            $taskRelative = $taskItem.FullName.Substring($taskBase.Length + 1).Replace('\', '/')
+            foreach ($taskSegment in $taskRelative.Split('/')) {
+                if (-not $taskSegment -or $taskSegment -in @('.', '..') -or $taskSegment -match '[<>:"|?*\x00-\x1f]|[. ]$' -or $taskSegment -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)') {
+                    throw 'Unsafe package member name.'
+                }
+            }
+            if ($taskRelative -ieq 'package-info.json') { continue }
+            if ($taskRelative -ieq 'PACKAGE-INCOMPLETE.txt') {
+                if (-not $AssemblyInProgress) { throw 'Package assembly is incomplete.' }
+                continue
+            }
+            [void]$taskFiles.Add($taskRelative)
+        }
+    }
+    Add-PackageFiles $taskBase
+    [string[]]$taskPaths = $taskFiles.ToArray()
+    [Array]::Sort($taskPaths, [StringComparer]::Ordinal)
+    foreach ($taskRelative in $taskPaths) {
+        $taskFile = Get-Item -LiteralPath (Join-Path $taskBase $taskRelative)
+        [pscustomobject][ordered]@{ path = $taskRelative; bytes = [long]$taskFile.Length; sha256 = Get-FileSha256 $taskFile.FullName }
+    }
+}
+
+if ($MyInvocation.InvocationName -eq '.') { return }
+
 if ($SelfCheck) {
     $valid = Resolve-PackageDestination ('self-check-valid-' + [Guid]::NewGuid().ToString('N'))
     if (-not $valid.StartsWith($taskDist + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
@@ -115,11 +215,14 @@ if ($taskVadMetadata.filename -ne $taskVadFileName -or $taskVadMetadata.sha256 -
     throw 'VAD provenance metadata does not match the pinned offline asset and license.'
 }
 $taskVadMetadataSha256 = Get-FileSha256 $taskVadMetadataPath
+$taskSourceBefore = Get-PackageSourceIdentity
+$taskBuildSucceeded = $false
 if (-not $SkipBuild) {
     $taskBuildArgs = @('build', '--locked', '--offline', '--target', $taskTarget)
     if ($Profile -eq 'Release') { $taskBuildArgs += '--release' }
     & $taskPowerShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'dev.ps1') @taskBuildArgs
     if ($LASTEXITCODE -ne 0) { throw 'Static Windows package build failed.' }
+    $taskBuildSucceeded = $true
 }
 $taskExecutable = Join-Path $taskRoot ('target\' + $taskTarget + '\' + $Profile.ToLowerInvariant() + '\rustcorder.exe')
 if (-not (Test-Path -LiteralPath $taskExecutable -PathType Leaf)) { throw "Built executable is missing: $taskExecutable" }
@@ -157,6 +260,12 @@ foreach ($taskImport in $taskImports) {
 $taskMetadataText = (& $taskPowerShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'dev.ps1') metadata --locked --offline --format-version 1 --filter-platform $taskTarget | Out-String)
 if ($LASTEXITCODE -ne 0) { throw 'Could not collect locked dependency/license metadata.' }
 $taskMetadata = $taskMetadataText | ConvertFrom-Json
+$taskRootPackages = @($taskMetadata.packages | Where-Object {
+    $_.id -ceq $taskMetadata.resolve.root -and $_.name -ceq 'rustcorder' -and $null -eq $_.source -and
+    [IO.Path]::GetFullPath($_.manifest_path) -ieq [IO.Path]::GetFullPath((Join-Path $taskRoot 'Cargo.toml'))
+})
+if ($taskRootPackages.Count -ne 1) { throw 'Locked metadata must identify the single rustcorder root package.' }
+$taskProductVersion = $taskRootPackages[0].version
 $taskNative = $taskMetadata.packages | Where-Object { $_.name -eq 'whisper-rs-sys' } | Select-Object -First 1
 $taskNativeLicense = Join-Path (Split-Path -Parent $taskNative.manifest_path) 'whisper.cpp\LICENSE'
 if (-not (Test-Path -LiteralPath $taskNativeLicense -PathType Leaf)) { throw 'The native whisper.cpp MIT license is missing.' }
@@ -189,16 +298,18 @@ foreach ($taskPackage in ($taskMetadata.packages | Where-Object { $_.source } | 
 }
 $taskNotice | Set-Content -LiteralPath (Join-Path $taskDestination 'THIRD-PARTY-NOTICES.md') -Encoding UTF8
 $taskImportsText | Set-Content -LiteralPath (Join-Path $taskDestination 'native-imports.txt') -Encoding UTF8
-$taskExecutableHash = Get-FileSha256 $taskExecutable
-@{
+$taskBuiltIdentity = Get-PackageExecutableIdentity $taskExecutable $taskProductVersion
+$taskPackageInfo = @{
     target = $taskTarget; profile = $Profile; built_at_utc = [DateTime]::UtcNow.ToString('o')
-    executable_sha256 = $taskExecutableHash
+    product_version = $taskBuiltIdentity.version; executable_sha256 = $taskBuiltIdentity.executable_sha256
+    # These are observed source coordinates, not proof for a reused executable.
+    source_sha = $taskSourceBefore.sha; source_tree_sha = $taskSourceBefore.tree_sha; source_dirty = $taskSourceBefore.dirty
     static_crt = $true; direct_imports = $taskImports; asr_models_bundled = $false
     vad_model_bundled = $true; vad_filename = $taskVadFileName; vad_sha256 = $taskVadSha256
     vad_bytes = 885098; vad_source_revision = $taskVadRevision
     vad_license_sha256 = $taskVadLicenseSha256; vad_metadata_sha256 = $taskVadMetadataSha256
     clean_disconnected_machine_validation = 'pending'
-} | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $taskDestination 'package-info.json') -Encoding UTF8
+}
 @'
 Run rustcorder.exe. Choose your local save folder and compatible model folder.
 ASR weights are separate. A local multilingual GGML base/small model supports Portuguese and English.
@@ -206,5 +317,12 @@ The verified Silero VAD speech-activity model is bundled beside the executable; 
 Recording without transcription works without a model. No first-run model/runtime download is used.
 This local validation package still requires a clean disconnected Windows acceptance test.
 '@ | Set-Content -LiteralPath (Join-Path $taskDestination 'START-HERE.txt') -Encoding UTF8
+# The metadata cannot hash itself. The incomplete marker is removed only after
+# final metadata is written and is never part of the distribution payload.
+$taskPackageInfo.inventory_excludes = @('package-info.json')
+$taskPackageInfo.files = @(Get-PackageFileInventory $taskDestination -AssemblyInProgress)
+$taskSourceAfter = Get-PackageSourceIdentity
+$taskPackageInfo.source_verification = Get-PackageSourceVerification $taskSourceBefore $taskSourceAfter ([bool]$SkipBuild) $taskBuildSucceeded
+$taskPackageInfo | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $taskDestination 'package-info.json') -Encoding UTF8
 Remove-Item -LiteralPath (Join-Path $taskDestination 'PACKAGE-INCOMPLETE.txt')
 Write-Output "Portable package created: $taskDestination"

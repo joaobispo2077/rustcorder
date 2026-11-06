@@ -346,3 +346,30 @@ Each follow-up has a separate cumulative index and review patch under the ignore
 by the previous 27-group approval. Test and fixture commits precede the fix, so
 the regression is intentionally red until the final group; push the complete
 reviewed sequence together. No release entry or tag execution is proposed.
+
+## Follow-up execution and hosted compatibility review
+
+The user approved groups 28–31. They were committed and pushed in that order,
+ending at `a3bb571726ff1b80444a602cf2c4991d5967b3da`. Pending hosted compatibility
+changes were preserved separately. Those groups are no longer awaiting approval.
+
+The completed first hosted attempt exposed a publisher fixture scope failure and
+a native mutation temporary-path failure. All 13 Rust quality gate receipts and
+the Node light mutation lane passed. See [hosted validation](ci-hosted-validation.md)
+for the retained failures, measured results, local regressions and remaining proof.
+
+These five additional groups are proposed on the existing feature branch:
+
+| Order | Proposed Conventional Commit | Responsibility and files |
+| --- | --- | --- |
+| 32 | `docs(ci): record hosted gate failures and fixes` | Observed hosted evidence and this review: docs/ci-hosted-validation.md, docs/commit-grouping-plan.md |
+| 33 | `build(test): preserve publisher fixture helpers` | Make the existing mock backend independent of caller scope: scripts/ci/tests/publish.test.ps1 |
+| 34 | `test(release): cover workflow invocation scope` | Reproduce the workflow's publisher test invocation: scripts/ci/tests/publisher-scope.test.mjs |
+| 35 | `test(mutation): cover hosted native path limits` | Guard the observed native tracking path and preserve local environments: scripts/ci/tests/mutation-rust-config.test.mjs |
+| 36 | `ci(mutation): shorten hosted native scratch paths` | Give hosted mutation children a short owned temporary root: scripts/ci/run-mutation.mjs |
+
+Each has a separate cumulative index and patch under the ignored
+`.build/commit-groups-hosted/` directory. These groups need their own approval;
+approval of groups 28–31 does not include them. The mutation regression is red
+until group 36, so push the complete reviewed sequence together. Hosted
+confirmation of these fixes is pending; no product release action is proposed.

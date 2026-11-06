@@ -1,85 +1,79 @@
 # CI promotion review
 
-## Reviewed implementation
+## Completed promotions
 
-The first 40 approved commits on feature/ci-quality-release ended at
-`49dee970193a774ef3b34625757414c50cfa6cbd`. Their
-[complete CI run](https://github.com/joaobispo2077/rustcorder/actions/runs/42168293447)
-passed, and all 17 applicable raw-evidence receipts and final readiness were
-independently verified. See [hosted validation](ci-hosted-validation.md).
+All 45 approved feature commits are pushed through
+e176912791cdb84ee2fee376bb97725d84c9f1ce. Their feature/PR CI passed and the
+applicable raw receipts were independently verified. Groups 41 and 44–47 are
+committed; do not recreate them.
 
-Draft [PR #1](https://github.com/joaobispo2077/rustcorder/pull/1) targets develop.
-Main, develop and release remain at
-`8b200d21c07d668e2e492c68139970031b923c65`. The user subsequently approved group 41
-and conditional merges 42–43. Group 41 is pushed as
-`ded51f43066c8c719667ac1aaea5ea17e4e60ba6`; neither merge occurred because its
-PR-specific checks exposed a cold Windows job timeout. A parallel feature run
-also exposed a redundant ZIP fixture startup timeout. Their exact evidence and
-the bounded corrections are in [hosted validation](ci-hosted-validation.md).
-Product release approval remains separate.
+Promotion group 42 merged [PR #1](https://github.com/joaobispo2077/rustcorder/pull/1)
+to develop as 3dc4301ec3fa5a0ee491733c3ddc03be1b078226. Group 43 merged
+[PR #2](https://github.com/joaobispo2077/rustcorder/pull/2) to release as
+26d2742e5d9b80da77f54f4c51af21b300e3662c after its latest PR and associated
+push checks passed. Both trees equal f8c2115cbec6c66033aec714d422cd52dfcd5763.
+Main remains at 8b200d21c07d668e2e492c68139970031b923c65.
 
-## Proposed commits and purpose
+The owner authorized continuation to main and a one-time initial-controller
+bootstrap exception for that tree. The normal published-candidate rule stays
+intact. [PR #3](https://github.com/joaobispo2077/rustcorder/pull/3) remains draft
+because actual release-push package acceptance failed when the real window
+extended outside the capturable desktop. Main has not been merged.
+See [hosted validation](ci-hosted-validation.md) for the exact retained evidence.
 
-| Group | Conventional Commit | Responsibility and status |
+## Proposed correction and renewed promotions
+
+| Group | Proposed Conventional Commit | Responsibility |
 | --- | --- | --- |
-| 41 | `docs(ci): record hosted readiness and promotion` | Approved, committed and pushed |
-| 42 | `chore(ci): promote quality foundation to develop` | Approved for the previous tree; deferred pending renewed tree approval and passing current-head PR checks |
-| 43 | `chore(ci): promote quality foundation to release` | Approved for the previous tree; deferred pending renewed tree approval and passing current-head PR checks |
-| 44 | `docs(ci): record cold runner budget evidence` | Proposed: update hosted evidence, this review, the grouping plan and quickstart |
-| 45 | `build(test): remove redundant ZIP setup process` | Proposed: replace only archive-fixture construction in scripts/ci/tests/authorization.test.mjs |
-| 46 | `test(ci): cover cold Windows startup allowance` | Proposed: three failing-then-passing budget checks in scripts/ci/tests/windows-budget.test.mjs |
-| 47 | `ci(workflows): reserve cold Windows setup time` | Proposed: outer Windows job limits in ci.yml and mutation-full.yml |
+| 48 | docs(ci): record native capture failure | Record promotions, failure and revised review |
+| 49 | test(ci): cover bounded native window placement | Smaller/large desktops, negative origins and ownership refusal |
+| 50 | ci(smoke): fit the owned window to the desktop | Fit the test-owned window before navigation; preserve strict capture and lifecycle checks |
+| 51 | chore(ci): promote native smoke fix to develop | Next feature-to-develop merge after latest associated checks pass |
+| 52 | chore(ci): promote native smoke fix to release | Next develop-to-release merge after latest associated checks pass |
+| 53 | chore(ci): promote quality foundation to main | PR #3 after fresh native proof and renewed bootstrap conditions |
 
-Group 41 contains only docs/ci-hosted-validation.md, docs/ci-promotion-review.md,
-docs/commit-grouping-plan.md and specs/003-ci-quality-release/quickstart.md. Its
-separate staging snapshot and patch are retained under the ignored
-`.build/commit-groups-readiness/` directory for review.
+Group 48 contains docs/ci-hosted-validation.md, docs/ci-promotion-review.md,
+docs/commit-grouping-plan.md and specs/003-ci-quality-release/quickstart.md.
+Group 49 contains scripts/ci/tests/ui-smoke.test.ps1. Group 50 contains only
+scripts/ci/ui-smoke.ps1. Separate cumulative indexes and patches are retained
+under the ignored .build/commit-groups-native-placement/ directory. Tests precede
+the adapter fix; push the complete reviewed sequence together.
 
-Groups 44–47 have separate cumulative indexes and patches under the ignored
-`.build/commit-groups-cold-start/` directory. They require new approval, including
-renewal of the two promotion merges for their final reviewed tree. Group numbers
-42–43 are retained for the deferred merges; new corrective commits execute first,
-in documentation, test infrastructure, tests and workflow order.
-
-Groups 42 and 43 preserve all reviewed atomic commits. They introduce no additional
-implementation, and both resulting trees must equal the newly approved feature
-tree including groups 44–47. The merge messages identify branch promotion as
-their sole responsibility.
+The correction changes no product code, desktop resolution, engine budget or
+quality floor. Geometry, native API ownership, smoke boundary, 358 support and
+publisher checks pass locally. Corrected hosted native acceptance remains
+unproved until the new tree is pushed.
 
 ## Execution conditions after approval
 
-1. Commit and push only corrective groups 44–47 on the existing feature branch.
-   PR #1 will receive fresh checks for that new head. Documentation group 41 has
-   already been committed and pushed; do not recreate it.
-2. Verify the PR head/tree, develop destination and latest PR-specific CI. Mark
-   the draft ready and merge only after every applicable check succeeds. Abort
-   for a changed source scope or an unexpected destination change.
-3. Open the develop-to-release PR using the verified first merge result. Verify
-   that its tree still equals the reviewed feature tree, that release remains at
-   the reviewed baseline, and that its own latest checks succeed before merging.
-4. Follow the actual release-push CI. Its package job must build a fresh Release
-   ZIP, verify executable/version/source identity, and observe the real Windows
-   window's Record / Transcribe file / Record navigation and normal close.
+1. Commit and push groups 48–50 on the existing feature branch. Freeze their final
+   tree in the review manifest; every promotion must retain that tree.
+2. Open the next feature-to-develop PR. Verify source/destination SHAs, latest
+   PR evidence, raw hashes, recomputed readiness and associated checks before
+   merging with history preserved. The reviewed develop baseline is
+   3dc4301ec3fa5a0ee491733c3ddc03be1b078226.
+3. Repeat for develop-to-release. Its reviewed release baseline is
+   26d2742e5d9b80da77f54f4c51af21b300e3662c.
+4. Verify the new actual release-push CI: fresh Release ZIP, real PID-bound
+   Record / Transcribe file / Record navigation, full-window screenshot and normal
+   close. Missing capability or failed assertion still blocks main. Capture
+   cropping and simulated native success remain forbidden.
+5. Renew the bootstrap exception for this corrected tree, then verify PR #3's
+   latest head and every other check. Only absent published-candidate policy and
+   its dependent readiness failure may be excepted. Abort for any other failure,
+   changed tree or destination movement. Main's reviewed baseline remains
+   8b200d21c07d668e2e492c68139970031b923c65.
+6. Merge to main preserving history, then verify main's own complete push CI.
 
-The workflow's native package job applies to an actual release push, so a feature
-push or PR cannot complete T081. A missing interactive desktop or failed native
-observation remains a failed acceptance result. Retain the diagnostics and obtain
-the explicitly required approval for a trusted disposable interactive runner if
-the hosted Windows runner lacks capability. Do not certify simulated controls
-as a native observation.
-
-These promotions stop at release. They do not authorize a release preparation,
-version/changelog release entry, product tag or GitHub Release publication.
-Trusted-main controller installation, required-check enforcement, reviewer
-environment setup, full/warm acceptance and final security review remain pending.
-The existing main-promotion rule continues to require the published candidate;
-initial controller adoption needs its own bounded bootstrap review.
+If the hosted runner genuinely lacks desktop capability, retain the failure and
+obtain the separately required approval for a trusted disposable interactive
+runner. Do not use a persistent personal runner or certify simulated controls.
 
 ## Approval boundary
 
-The user authorized branch creation, commits and pushes, but separately requires
-review and approval of each proposed commit group before committing. Groups
-44–47 remain proposals, and promotions 42–43 require approval of their changed
-tree before execution. All 358 support tests and publisher boundary checks pass
-locally; fresh hosted proof remains required. Approval of these corrections and
-promotions does not authorize a product release or publication.
+The user requires approval of each proposed commit group. Groups 48–53 await
+approval; earlier approval covered the previous tree. The renewed main exception
+is limited to initial controller installation and preserves future policy.
+No version change, release entry, product tag or publication is included.
+Timing/full runs, actual remote enforcement and remaining acceptance tasks stay
+pending until proved.

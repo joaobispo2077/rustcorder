@@ -213,3 +213,128 @@ the agreed fixed sidebar and flexible transcript workspace; the recording and
 inference engines are unchanged. Earlier preview paths above describe historical
 packaging checkpoints. See [layout correction](ui-layout-correction.md) for actual
 rendering checks, native inspection and the proposed commit split.
+
+## Reproducing CI locally
+
+Review the named complexity ceilings and version-scoped dependency allowances
+before their recorded expiry. Remove an exception when its code improves or
+disappears; new debt needs an explicit owner, reason and review date. Do not
+replace a symbol exception with a broad path exclusion or reduce a gate floor.
+
+Run these PowerShell 7 (`pwsh`) examples from the repository root on Windows
+x64. They reproduce local checks and retain their raw evidence. The
+[ordinary workflow](../.github/workflows/ci.yml) and
+[full mutation workflow](../.github/workflows/mutation-full.yml) remain the
+declarations of hosted job order and conditions. These instructions are commands
+to run, not a claim that every gate or device acceptance has passed.
+
+First install the reviewed Windows tools and locked CI dependencies. Setup may
+download the pinned public developer tools; application runtime stays offline.
+The dispatcher prefers the checkout's Node 24.22.2 and falls back to
+`node.exe` on PATH. Require the same exact version for the dependency command:
+
+```powershell
+rtk proxy pwsh -NoProfile -File scripts/ci/setup-windows.ps1 -Install
+$ciNode = Join-Path $PWD '.build/ci-tools/node/node-v24.22.2-win-x64/node.exe'
+if (-not (Test-Path -LiteralPath $ciNode)) { $ciNode = (Get-Command node.exe -ErrorAction Stop).Source }
+$ciVersion = rtk proxy $ciNode --version
+if (($ciVersion | Out-String).Trim() -cne 'v24.22.2') { throw 'Use the pinned Node 24.22.2 before continuing.' }
+$ciNpm = Join-Path (Split-Path -Parent $ciNode) 'node_modules/npm/bin/npm-cli.js'
+rtk proxy $ciNode $ciNpm ci --prefix scripts/ci --omit=peer --ignore-scripts
+```
+
+The exact pins and dependency policy live in
+[toolchain.json](../scripts/ci/toolchain.json) and
+[policy.json](../scripts/ci/policy.json). Keep the source commit and dirty state
+stable during a collection. Choose a fresh directory under this checkout's
+`.build/` for every attempt; each gate refuses existing output. Reuse that one
+directory for different gates in the same collection so context and receipts
+stay together.
+
+```powershell
+$ciEvidence = [IO.Path]::GetFullPath((Join-Path $PWD ('.build/ci-evidence/local-' + [Guid]::NewGuid().ToString('N'))))
+$env:RUSTCORDER_CI_RUN_ID = 'local-' + [Guid]::NewGuid().ToString('N')
+rtk proxy $ciNode scripts/ci/gates.mjs policy-run --root $ciEvidence --actionlint .build/ci-tools/actionlint-windows/actionlint.exe
+rtk proxy pwsh -NoProfile -File scripts/ci/ci.ps1 -Gate quality -EvidenceDirectory $ciEvidence
+rtk proxy pwsh -NoProfile -File scripts/ci/ci.ps1 -Gate mutation-rust -Profile light -EvidenceDirectory $ciEvidence
+rtk proxy pwsh -NoProfile -File scripts/ci/ci.ps1 -Gate mutation-ci -Profile light -EvidenceDirectory $ciEvidence
+```
+
+The `quality` alias collects 13 gates and retains individual failures while
+continuing the collection. Policy, the two mutation engines and native packaging
+run separately.
+
+Quality selection: `prerequisites`, `format`, `lint`, `build`, `unit`,
+`integration`, `ui`, `coverage`, `complexity`, `deadcode`, `duplication`,
+`architecture`, `dependencies`.
+
+To isolate a failure, replace `-Gate quality` with one of those exact names and
+use a fresh evidence directory. An unset measurement, missing raw output, failed
+child or incomplete population must retain its actual blocking status.
+
+The adopted limits are a 72% coverage floor using exact covered/total line counts
+from raw all-target LLVM JSON; complexity 10 by default with 15 legacy exceptions
+that retain their named ceilings, owners and expiry dates; and 2% duplication of
+the declared Rust source population. The 90% cheap-unit target is a separate
+repository testing-mix policy. Coverage includes embedded tests and instrumented
+library/UI/integration/binary code. The five external integration scenarios in
+[test-populations.json](../scripts/ci/test-populations.json) stay explicitly
+ignored until their required models, corpus or devices are available. Preserve
+those names and reasons; ordinary executed populations must remain nonzero.
+
+Each mutation engine independently requires 40% light or 50% full, within
+20 minutes or 60 minutes respectively. The runner first proves its declared
+baseline and reconciles generated mutants with fresh outcomes. Timeouts,
+execution errors, absent output and cached results remain incomplete. Full runs
+use a separate fresh collection:
+
+```powershell
+$fullEvidence = [IO.Path]::GetFullPath((Join-Path $PWD ('.build/ci-evidence/full-' + [Guid]::NewGuid().ToString('N'))))
+rtk proxy pwsh -NoProfile -File scripts/ci/ci.ps1 -Gate mutation-rust -Profile full -EvidenceDirectory $fullEvidence
+rtk proxy pwsh -NoProfile -File scripts/ci/ci.ps1 -Gate mutation-ci -Profile full -EvidenceDirectory $fullEvidence
+```
+
+The `ui` gate runs simulated egui drawing/input checks. The separate native
+package gate builds a fresh Release snapshot, checks its executable version and
+hash, and requires an actual interactive Windows window: Record, Transcribe
+file, then Record navigation and normal close. It retains native accessibility,
+bounds and screenshot evidence. Missing desktop/UI Automation capability fails
+the gate. It does not start recording or inference.
+
+For that additional local package check, continue the ordinary collection:
+
+```powershell
+rtk proxy pwsh -NoProfile -File scripts/ci/ci.ps1 -Gate package -EvidenceDirectory $ciEvidence
+```
+
+The gate automatically provisions only the public VAD asset with the immutable
+[pinned hashes and provenance](../assets/silero-vad.json); its license and copied
+payload are also checked. Separate ASR weights remain user-owned. A safe unique
+inner folder, canonical versioned ZIP, `package-manifest.json` and
+`SHA256SUMS` retain source/build identity and file hashes. Package and evidence
+destinations enforce no-overwrite. A local dirty build keeps that provenance;
+hosted release-package certification requires a clean, fresh Release build.
+Real-device recording, real-model accuracy and clean disconnected-machine
+acceptance remain separate checks in the
+[validation evidence](ci-quality-release-validation.md).
+
+Finally generate the available-evidence report, then inspect readiness using the
+same ordinary collection:
+
+```powershell
+rtk proxy pwsh -NoProfile -File scripts/ci/ci.ps1 -Gate report -EvidenceDirectory $ciEvidence
+rtk proxy pwsh -NoProfile -File scripts/ci/ci.ps1 -Gate readiness -EvidenceDirectory $ciEvidence
+```
+
+Read `report/report.md`, `report/report.json`, `certification.json`, each gate's
+`gate.json`, stdout/stderr logs and retained raw outputs. A successfully written
+report can describe missing, failed or incomplete gates; it does not convert them
+to success. Local evidence cannot certify hosted readiness, so the local
+readiness command remains blocked and records its reasons even when executed
+checks pass. A full-mutation-only collection also lacks ordinary quality evidence.
+
+Hosted artifacts retain available evidence for 14 days, including failed runs
+when upload can execute. Keep a needed local copy before expiry, and link raw
+measurements when reporting a failure. These reproduction commands create local
+validation data; publication follows the separate
+[versioning guidance](versioning.md).

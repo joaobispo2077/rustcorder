@@ -605,6 +605,8 @@ impl Desktop {
                     })
                     .response
                     .labelled_by(label.id);
+                #[cfg(test)]
+                remember_rect(ui, "language", language_response.rect);
                 let _ = language_response;
             });
             if let Some(model) = &mut config.model {
@@ -623,6 +625,11 @@ impl Desktop {
                         .size(14.0)
                         .color(SECONDARY),
                 );
+                #[cfg(test)]
+                {
+                    remember_rect(ui, "readiness", readiness.rect);
+                    remember_rect(ui, "model_clip", ui.clip_rect());
+                }
                 let _ = readiness;
             }
             ModelState::Checking => {
@@ -690,6 +697,8 @@ impl Desktop {
             egui::Button::new("Choose WAV or MP3…")
                 .min_size(egui::vec2(ui.available_width(), 36.0)),
         );
+        #[cfg(test)]
+        remember_rect(ui, "first_control", picker.rect);
         if picker.clicked()
             && let Some(path) = rfd::FileDialog::new()
                 .add_filter("Audio", &["wav", "mp3"])
@@ -735,6 +744,13 @@ impl Desktop {
                 .fill(ACCENT)
                 .min_size(egui::vec2(150.0, 44.0)),
         );
+        #[cfg(test)]
+        {
+            remember_rect(ui, "primary", primary.rect);
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::unique("primary_enabled"), primary.enabled())
+            });
+        }
         if primary.clicked() {
             if recording {
                 self.stop_recording();
@@ -752,6 +768,9 @@ impl Desktop {
     }
     fn transcript_actions(&mut self, ui: &mut egui::Ui) {
         let available = !self.transcript.stable_text().is_empty();
+        #[cfg(test)]
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(egui::Id::unique("footer_cancel_enabled"), false));
         ui.horizontal_wrapped(|ui| {
             if ui.add_enabled(available, egui::Button::new("Copy text")).clicked() { ui.ctx().copy_text(self.transcript.export_text()); }
             if ui.add_enabled(available, egui::Button::new("Save text…")).clicked()
@@ -762,6 +781,8 @@ impl Desktop {
             if self.job.is_some() && (matches!(self.controller.capture(), CaptureState::Starting | CaptureState::Recording | CaptureState::Stopping | CaptureState::Saving) || self.job_mode == Some(JobMode::Models))
             {
                 let cancel=ui.button(if self.job_mode == Some(JobMode::Models) { "Cancel model check" } else { "Cancel transcription" });
+                #[cfg(test)]
+                ui.ctx().data_mut(|data|data.insert_temp(egui::Id::unique("footer_cancel_enabled"),cancel.enabled()));
                 if cancel.clicked() && let Some(job)=&self.job {self.user_cancelled=true;job.cancel();}
             }
         });
@@ -868,6 +889,8 @@ impl Desktop {
             .exact_size(footer_height)
             .frame(egui::Frame::new())
             .show(ui, |ui| self.transcript_actions(ui));
+        #[cfg(test)]
+        remember_rect(ui, "footer", footer.response.rect);
         let _ = footer;
         let has_result = matches!(self.controller.capture(), CaptureState::Finished(_))
             || !self.notice.is_empty();
@@ -958,6 +981,8 @@ impl Desktop {
                     );
                 }
             });
+        #[cfg(test)]
+        remember_rect(ui, "transcript", scroll.inner_rect);
         let _ = scroll;
     }
     fn draw(&mut self, ui: &mut egui::Ui) {
@@ -1029,10 +1054,14 @@ impl Desktop {
                         self.model_controls(ui);
                     });
             });
+        #[cfg(test)]
+        remember_rect(ui, "settings", settings.response.rect);
         let _ = settings;
         let workspace = egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(24))
             .show(ui, |ui| self.workspace(ui));
+        #[cfg(test)]
+        remember_rect(ui, "workspace", workspace.response.rect);
         let _ = workspace;
     }
 }
@@ -1144,6 +1173,12 @@ fn model_label(candidate: &ModelCandidate, result: &Result<ModelMetadata, String
     }
 }
 
+#[cfg(test)]
+fn remember_rect(ui: &egui::Ui, name: &str, rect: egui::Rect) {
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(egui::Id::unique(name), rect));
+}
+
 fn text_outcome(
     result: Result<(), String>,
     user_cancelled: bool,
@@ -1200,6 +1235,10 @@ fn device_picker(
         .clone()
         .labelled_by(caption.id)
         .on_hover_text(name);
+    #[cfg(test)]
+    if label == "Microphone" {
+        remember_rect(ui, "first_control", picker.response.rect);
+    }
 }
 
 fn ui_busy(controller: &Controller, resources_pending: bool) -> bool {
@@ -1213,6 +1252,239 @@ fn live_finish_ready(capture: &CaptureState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rendered_combined_ready_settings_fit_without_scrolling() {
+        for size in [[1040.0, 880.0], [1014.0, 856.0]] {
+            let mut app = desktop_fixture();
+            let folder = PathBuf::from(r"C:\Users\someone\dev\tools\rustcorder\models");
+            let model = folder.join("ggml-base.bin");
+            app.controller = Controller::new(AppConfig {
+                mode: RecordingMode::MicrophoneAndComputer,
+                microphone_id: Some("mic".into()),
+                output_id: Some("output".into()),
+                save_folder: PathBuf::from(r"C:\Recordings"),
+                live_transcription: true,
+                model: Some(ModelConfig {
+                    path: model.clone(),
+                    language: Language::Portuguese,
+                }),
+            });
+            app.controller.start_model_validation().unwrap();
+            app.controller.finish_model_validation(Ok(())).unwrap();
+            app.settings.model_folder = Some(folder);
+            app.models = vec![(
+                ModelCandidate {
+                    path: model,
+                    display_name: "ggml-base.bin".into(),
+                },
+                Ok(ModelMetadata {
+                    family: "base".into(),
+                    multilingual: true,
+                }),
+            )];
+            app.devices = vec![
+                DeviceInfo {
+                    id: "mic".into(),
+                    name: "Headset microphone".into(),
+                    kind: DeviceKind::Microphone,
+                    is_default: true,
+                },
+                DeviceInfo {
+                    id: "output".into(),
+                    name: "Headphones".into(),
+                    kind: DeviceKind::ComputerOutput,
+                    is_default: true,
+                },
+            ];
+            app.status = "Ready to record".into();
+            let ctx = egui::Context::default();
+            configure_style(&ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(size[0], size[1]),
+                )),
+                ..Default::default()
+            };
+            let mut combined_label_visible = false;
+            for _ in 0..2 {
+                let output = ctx.run_ui(input.clone(), |ui| app.draw(ui));
+                combined_label_visible=output.shapes.iter().any(|shape|matches!(&shape.shape,egui::epaint::Shape::Text(text) if text.galley.job.text=="Microphone + computer audio"&&!text.galley.elided));
+                output.drop_without_applying_deltas();
+            }
+            let [language, readiness, clip] = ["language", "readiness", "model_clip"].map(|key| {
+                ctx.data(|data| {
+                    data.get_temp::<egui::Rect>(egui::Id::unique(key))
+                        .expect(key)
+                })
+            });
+            assert!(
+                clip.contains_rect(language),
+                "Language selector must be visible at {size:?}: {language:?} in {clip:?}"
+            );
+            assert!(
+                clip.contains_rect(readiness),
+                "Readiness must be visible at {size:?}: {readiness:?} in {clip:?}"
+            );
+            assert!(language.height() >= 36.0);
+            assert!(
+                combined_label_visible,
+                "The complete selected capture mode should be visible"
+            );
+            println!(
+                "Combined ready {size:?}: language={language:?}, readiness={readiness:?}, clip={clip:?}"
+            );
+        }
+    }
+    #[test]
+    fn rendered_cancel_remains_available_while_audio_stops_and_saves() {
+        for saving in [false, true] {
+            let mut app = desktop_fixture();
+            app.controller.stop_recording().unwrap();
+            if saving {
+                app.controller.capture_stopped().unwrap();
+            }
+            let worker = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(".build/missing-ui-test-worker.exe");
+            assert!(!worker.exists());
+            app.job = Some(Job::file_with_command(
+                app.controller.config().model.clone().unwrap(),
+                "unused.wav".into(),
+                std::process::Command::new(worker),
+            ));
+            let ctx = egui::Context::default();
+            configure_style(&ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1014.0, 856.0),
+                )),
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| app.draw(ui))
+                .drop_without_applying_deltas();
+            assert_eq!(
+                ctx.data(|data| data.get_temp::<bool>(egui::Id::unique("primary_enabled"))),
+                Some(false)
+            );
+            assert_eq!(
+                ctx.data(|data| data.get_temp::<bool>(egui::Id::unique("footer_cancel_enabled"))),
+                Some(true),
+                "Stopping/saving audio must not remove text cancellation"
+            );
+        }
+    }
+    fn rendered_layout(
+        size: [f32; 2],
+        scale: f32,
+        file_tab: bool,
+    ) -> (egui::Context, [egui::Rect; 6]) {
+        let mut app = desktop_fixture();
+        app.controller = Controller::new(AppConfig {
+            microphone_id: Some("mic".into()),
+            save_folder: "recordings".into(),
+            ..AppConfig::default()
+        });
+        app.file_tab = file_tab;
+        let ctx = egui::Context::default();
+        configure_style(&ctx);
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(size[0], size[1]),
+            )),
+            ..Default::default()
+        };
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .native_pixels_per_point = Some(scale);
+        for _ in 0..2 {
+            ctx.run_ui(input.clone(), |ui| app.draw(ui))
+                .drop_without_applying_deltas();
+        }
+        let rectangles = [
+            "settings",
+            "workspace",
+            "transcript",
+            "primary",
+            "first_control",
+            "footer",
+        ]
+        .map(|name| {
+            ctx.data(|data| {
+                data.get_temp::<egui::Rect>(egui::Id::unique(name))
+                    .expect(name)
+            })
+        });
+        (ctx, rectangles)
+    }
+    #[test]
+    fn rendered_record_layout_matches_the_two_column_mockup() {
+        let (ctx, [settings, workspace, transcript, primary, control, footer]) =
+            rendered_layout([1014.0, 856.0], 1.0, false);
+        assert!(
+            (settings.width() - 290.0).abs() <= 1.0,
+            "Settings must occupy the fixed sidebar: {settings:?}"
+        );
+        assert!(
+            workspace.left() >= settings.right(),
+            "Transcript workspace must sit beside settings"
+        );
+        assert!(
+            transcript.height() > 300.0,
+            "Transcript should use the workspace height: {transcript:?}"
+        );
+        assert!(
+            primary.top() < settings.top() + 100.0 && primary.right() > workspace.right() - 50.0,
+            "Primary action belongs at the upper right: {primary:?}"
+        );
+        assert!(
+            primary.height() >= 44.0 && control.height() >= 36.0,
+            "Controls must be readable and easy to hit"
+        );
+        assert!(footer.bottom() <= 856.0 && footer.top() >= transcript.bottom());
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<bool>(egui::Id::unique("primary_enabled"))),
+            Some(true)
+        );
+        assert!(
+            egui::TextStyle::Body
+                .resolve(&ctx.style_of(egui::Theme::Dark))
+                .size
+                >= 16.0
+        );
+    }
+    #[test]
+    fn rendered_file_layout_keeps_the_same_sidebar_and_expands_on_wide_windows() {
+        let (ctx, [settings, workspace, transcript, primary, control, footer]) =
+            rendered_layout([2048.0, 1117.0], 1.0, true);
+        assert!((settings.width() - 290.0).abs() <= 1.0);
+        assert!(workspace.left() >= settings.right());
+        assert!(
+            transcript.width() > 1600.0 && transcript.height() > 700.0,
+            "Wide windows should expand the transcript: {transcript:?}"
+        );
+        assert!(primary.height() >= 44.0 && control.height() >= 36.0);
+        assert!(footer.bottom() <= 1117.0 && footer.top() >= transcript.bottom());
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<bool>(egui::Id::unique("primary_enabled"))),
+            Some(false)
+        );
+    }
+    #[test]
+    fn rendered_small_high_dpi_window_preserves_a_visible_transcript() {
+        for file_tab in [false, true] {
+            let (_, [settings, workspace, transcript, primary, _, footer]) =
+                rendered_layout([760.0, 600.0], 2.0, file_tab);
+            assert!((settings.width() - 290.0).abs() <= 1.0);
+            assert!(workspace.left() >= settings.right());
+            assert!(transcript.width() > 300.0 && transcript.height() >= 180.0);
+            assert!(primary.right() <= 760.0 && primary.top() < 220.0);
+            assert!(footer.bottom() <= 600.0 && footer.top() >= transcript.bottom());
+        }
+    }
     fn desktop_fixture() -> Desktop {
         let config = AppConfig {
             microphone_id: Some("mic".into()),
@@ -1358,6 +1630,239 @@ mod tests {
             TextOutcome::Incomplete(_)
         ));
     }
+
+    #[derive(Clone, Copy, Debug)]
+    enum MatrixState {
+        Idle,
+        Ready,
+        Busy,
+        Stopping,
+        Saving,
+        Failed,
+        Completed,
+    }
+
+    fn matrix_ready() -> Desktop {
+        let mut app = desktop_fixture();
+        app.controller = Controller::new(app.controller.config().clone());
+        app.controller.start_model_validation().unwrap();
+        app.controller.finish_model_validation(Ok(())).unwrap();
+        app.file = Some("matrix.wav".into());
+        app.job_mode = None;
+        app
+    }
+
+    fn matrix_text(app: &mut Desktop) {
+        app.transcript.apply(
+            vec![crate::transcription::Segment {
+                start_sample: 0,
+                end_sample: 100,
+                text: "Deterministic transcript".into(),
+            }],
+            0,
+            100,
+            true,
+        );
+        app.transcript.finish(100);
+    }
+
+    fn matrix_pending(app: &mut Desktop, file: bool) {
+        if file {
+            app.controller
+                .start_file_transcription("matrix.wav".into())
+                .unwrap();
+        } else {
+            app.controller.start_recording(Ok(())).unwrap();
+            app.controller.capture_started().unwrap();
+        }
+        // No real worker, model, hardware or dialog is used by the drawing fixture.
+        let missing =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".build/missing-matrix-worker.exe");
+        assert!(!missing.exists());
+        app.job = Some(Job::file_with_command(
+            app.controller.config().model.clone().unwrap(),
+            "matrix.wav".into(),
+            std::process::Command::new(missing),
+        ));
+        app.job_mode = Some(if file { JobMode::File } else { JobMode::Live });
+    }
+
+    fn matrix_app(state: MatrixState, file: bool) -> Desktop {
+        let mut app = matrix_ready();
+        app.file_tab = file;
+        match state {
+            MatrixState::Idle => {
+                app.controller = Controller::default();
+                app.file = None;
+            }
+            MatrixState::Ready => {}
+            MatrixState::Busy => matrix_pending(&mut app, file),
+            MatrixState::Stopping | MatrixState::Saving => {
+                matrix_pending(&mut app, false);
+                app.controller.stop_recording().unwrap();
+                if matches!(state, MatrixState::Saving) {
+                    app.controller.capture_stopped().unwrap();
+                }
+            }
+            MatrixState::Failed | MatrixState::Completed => {
+                app.controller
+                    .start_file_transcription("matrix.wav".into())
+                    .unwrap();
+                let outcome = if matches!(state, MatrixState::Failed) {
+                    app.transcript.fail("Deterministic failure");
+                    TextOutcome::Failed("Deterministic failure".into())
+                } else {
+                    matrix_text(&mut app);
+                    TextOutcome::Completed
+                };
+                app.controller.finish_transcription(outcome).unwrap();
+            }
+        }
+        app
+    }
+
+    fn matrix_harness(
+        state: MatrixState,
+        file: bool,
+        size: [f32; 2],
+        scale: f32,
+    ) -> egui_kittest::Harness<'static, Desktop> {
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(size)
+            .with_pixels_per_point(scale)
+            .with_context_setup(configure_style)
+            .with_max_steps(8)
+            .build_ui_state(
+                |ui, app: &mut Desktop| app.draw(ui),
+                matrix_app(state, file),
+            );
+        // Busy spinners deliberately repaint forever; never wait for them to settle.
+        harness.run_steps(2);
+        harness
+    }
+
+    fn matrix_rect(harness: &egui_kittest::Harness<'_, Desktop>, name: &str) -> egui::Rect {
+        harness.ctx.data(|data| {
+            data.get_temp::<egui::Rect>(egui::Id::unique(name))
+                .expect(name)
+        })
+    }
+
+    fn assert_matrix_geometry(harness: &egui_kittest::Harness<'_, Desktop>, size: [f32; 2]) {
+        let settings = matrix_rect(harness, "settings");
+        let workspace = matrix_rect(harness, "workspace");
+        let transcript = matrix_rect(harness, "transcript");
+        let primary = matrix_rect(harness, "primary");
+        let footer = matrix_rect(harness, "footer");
+        assert!(workspace.left() >= settings.right(), "{harness:#?}");
+        assert!(transcript.width() > 250.0, "{transcript:?}\n{harness:#?}");
+        assert!(transcript.height() >= 150.0, "{transcript:?}\n{harness:#?}");
+        assert!(primary.height() >= 44.0, "{primary:?}\n{harness:#?}");
+        assert!(primary.right() <= size[0], "{primary:?}\n{harness:#?}");
+        assert!(footer.bottom() <= size[1] + 1.0, "{footer:?}\n{harness:#?}");
+        assert!(
+            footer.top() >= transcript.bottom(),
+            "{footer:?} {transcript:?}"
+        );
+    }
+
+    #[test]
+    fn actual_draw_matrix_covers_both_screens_states_sizes_and_scales() {
+        use egui_kittest::kittest::Queryable;
+        let states = [
+            MatrixState::Idle,
+            MatrixState::Ready,
+            MatrixState::Busy,
+            MatrixState::Stopping,
+            MatrixState::Saving,
+            MatrixState::Failed,
+            MatrixState::Completed,
+        ];
+        let mut cases = 0;
+        for file in [false, true] {
+            for state in states {
+                for size in [[1040.0, 880.0], [760.0, 600.0], [2048.0, 1117.0]] {
+                    for scale in [1.0, 2.0] {
+                        let harness = matrix_harness(state, file, size, scale);
+                        assert_matrix_geometry(&harness, size);
+                        assert!(harness.get_by_label("Record").rect().height() >= 30.0);
+                        if matches!(state, MatrixState::Stopping | MatrixState::Saving) {
+                            assert!(
+                                harness
+                                    .get_by_label("Cancel transcription")
+                                    .rect()
+                                    .is_positive(),
+                                "{state:?}\n{harness:#?}"
+                            );
+                            assert_eq!(
+                                harness.ctx.data(|data| data
+                                    .get_temp::<bool>(egui::Id::unique("primary_enabled"))),
+                                Some(false)
+                            );
+                        }
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 84, "Stopping and saving are distinct concrete cases");
+    }
+
+    #[test]
+    fn actual_ui_keyboard_tab_enter_and_pointer_navigation_reach_both_screens() {
+        use egui_kittest::kittest::Queryable;
+        let mut harness = matrix_harness(MatrixState::Ready, false, [1040.0, 880.0], 1.0);
+        harness.get_by_label("Record").focus();
+        harness.run_steps(2);
+        harness.key_press(egui::Key::Tab);
+        harness.run_steps(2);
+        assert!(
+            harness.get_by_label("Transcribe file").is_focused(),
+            "{harness:#?}"
+        );
+        harness.key_press(egui::Key::Enter);
+        harness.run_steps(2);
+        assert!(harness.state().file_tab, "{harness:#?}");
+        harness.get_by_label("Record").click();
+        harness.run_steps(2);
+        assert!(!harness.state().file_tab, "{harness:#?}");
+    }
+
+    #[test]
+    fn actual_ui_copy_and_discard_preserve_the_exported_text() {
+        use egui_kittest::kittest::Queryable;
+        let mut harness = matrix_harness(MatrixState::Completed, false, [1040.0, 880.0], 1.0);
+        harness.get_by_label("Copy text").click();
+        harness.step();
+        assert!(
+            harness
+                .output()
+                .platform_output
+                .commands
+                .iter()
+                .any(|command| matches!(command,
+            egui::OutputCommand::CopyText(text) if text.contains("Deterministic transcript"))),
+            "{harness:#?}"
+        );
+        harness.get_by_label("Discard transcript").click();
+        harness.run_steps(2);
+        assert!(
+            harness.state().transcript.stable_text().is_empty(),
+            "{harness:#?}"
+        );
+    }
+
+    #[test]
+    fn actual_ui_cancel_remains_clickable_while_stopping_and_saving() {
+        use egui_kittest::kittest::Queryable;
+        for state in [MatrixState::Stopping, MatrixState::Saving] {
+            let mut harness = matrix_harness(state, false, [760.0, 600.0], 2.0);
+            harness.get_by_label("Cancel transcription").click();
+            harness.run_steps(2);
+            assert!(harness.state().user_cancelled, "{state:?}\n{harness:#?}");
+        }
+    }
+
     #[test]
     fn dropped_final_live_chunk_is_detected_from_the_saved_audio_length() {
         let mut transcript = Transcript::default();

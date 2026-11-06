@@ -68,7 +68,7 @@ function Get-CiAsset {
         $taskTemporary = $taskArchive + '.partial-' + [Guid]::NewGuid().ToString('N')
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            Invoke-WebRequest -UseBasicParsing -Uri $taskAsset.url -OutFile $taskTemporary
+            Invoke-WebRequest -UseBasicParsing -Uri $taskAsset.url -OutFile $taskTemporary -MaximumRetryCount 2 -RetryIntervalSec 2 -ConnectionTimeoutSeconds 120 -OperationTimeoutSeconds 120
             Assert-CiFileHash $taskTemporary $taskAsset.sha256 | Out-Null
             Move-Item -LiteralPath $taskTemporary -Destination $taskArchive
         } finally {

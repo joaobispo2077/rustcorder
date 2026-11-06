@@ -58,12 +58,7 @@ pub struct Desktop {
 
 impl Desktop {
     pub fn new(context: &eframe::CreationContext<'_>) -> Self {
-        let mut style = (*context.egui_ctx.style_of(egui::Theme::Dark)).clone();
-        style.spacing.item_spacing = egui::vec2(10.0, 10.0);
-        style.visuals = egui::Visuals::dark();
-        style.visuals.selection.bg_fill = Color32::from_rgb(32, 122, 112);
-        context.egui_ctx.set_style_of(egui::Theme::Dark, style);
-        context.egui_ctx.set_theme(egui::ThemePreference::Dark);
+        configure_style(&context.egui_ctx);
         let (settings, notice) = match settings::default_path()
             .and_then(|path| settings::load(&path))
         {
@@ -509,86 +504,269 @@ impl Desktop {
         }
     }
     fn model_controls(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Local transcription model").default_open(self.models.is_empty()).show(ui,|ui| {
-            ui.label("Compatible packs: whisper.cpp GGML base / small. The app never downloads models.");
-            if ui.add_enabled(!self.busy(),egui::Button::new("Choose model folder…")).clicked()
-                && let Some(folder)=rfd::FileDialog::new().pick_folder() {self.scan_models(folder);}
-            if let Some(folder)=&self.settings.model_folder {ui.label(folder.display().to_string());}
-            let mut config=self.controller.config().clone();let before=config.clone();
-            ui.add_enabled_ui(!self.busy(),|ui| {
-                let selected=config.model.as_ref().map(|m|m.path.file_name().unwrap_or_default().to_string_lossy().into_owned()).unwrap_or("Choose a model".into());
-                egui::ComboBox::from_id_salt("model").selected_text(selected).show_ui(ui,|ui| {
-                    for (candidate,result) in &self.models {
+        ui.label("Local models");
+        if let Some(folder) = &self.settings.model_folder {
+            ui.label(
+                RichText::new(folder.display().to_string())
+                    .size(14.0)
+                    .color(SECONDARY),
+            );
+        } else {
+            ui.label(
+                RichText::new("No model folder selected")
+                    .size(14.0)
+                    .color(SECONDARY),
+            );
+        }
+        if ui
+            .add_enabled(
+                !self.busy(),
+                egui::Button::new("Choose model folder…")
+                    .min_size(egui::vec2(ui.available_width(), 36.0)),
+            )
+            .clicked()
+            && let Some(folder) = rfd::FileDialog::new().pick_folder()
+        {
+            self.scan_models(folder);
+        }
+        let mut config = self.controller.config().clone();
+        let before = config.clone();
+        ui.add_enabled_ui(!self.busy(), |ui| {
+            let label = ui.label("Model");
+            let selected = config
+                .model
+                .as_ref()
+                .and_then(|selected| {
+                    self.models
+                        .iter()
+                        .find(|(candidate, _)| candidate.path == selected.path)
+                })
+                .map(|(candidate, result)| model_label(candidate, result))
+                .unwrap_or_else(|| "Choose a model".into());
+            egui::ComboBox::from_id_salt("model")
+                .selected_text(selected)
+                .width(ui.available_width())
+                .truncate()
+                .show_ui(ui, |ui| {
+                    for (candidate, result) in &self.models {
                         match result {
-                            Ok(metadata)=>{let label=format!("{} — {}",candidate.display_name,if metadata.multilingual{"Portuguese + English"}else{"English only"});let picked=config.model.as_ref().is_some_and(|m|m.path==candidate.path);if ui.selectable_label(picked,label).clicked(){config.model=Some(ModelConfig{path:candidate.path.clone(),language:config.model.as_ref().map(|m|m.language).unwrap_or_default()});}},
-                            Err(reason)=>{ui.label(format!("{}: {reason}",candidate.display_name));}
+                            Ok(_) => {
+                                let picked = config
+                                    .model
+                                    .as_ref()
+                                    .is_some_and(|model| model.path == candidate.path);
+                                if ui
+                                    .selectable_label(picked, model_label(candidate, result))
+                                    .clicked()
+                                {
+                                    config.model = Some(ModelConfig {
+                                        path: candidate.path.clone(),
+                                        language: config
+                                            .model
+                                            .as_ref()
+                                            .map(|model| model.language)
+                                            .unwrap_or_default(),
+                                    });
+                                }
+                            }
+                            Err(reason) => {
+                                ui.label(format!("{}: {reason}", candidate.display_name));
+                            }
                         }
                     }
-                });
-                if let Some(model)=&mut config.model {
-                    ui.horizontal(|ui| {
-                        ui.label("Spoken language:");
-                        ui.selectable_value(&mut model.language,Language::Portuguese,"Português brasileiro");
-                        let supports_en=self.models.iter().find(|(c,_)|c.path==model.path).is_some_and(|(_,r)|r.is_ok());
-                        ui.add_enabled_ui(supports_en,|ui|{ui.selectable_value(&mut model.language,Language::English,"English");});
-                    });
-                }
+                })
+                .response
+                .labelled_by(label.id);
+            let label = ui.label("Spoken language");
+            let mut language = config
+                .model
+                .as_ref()
+                .map(|model| model.language)
+                .unwrap_or_default();
+            let supports_english = config.model.as_ref().is_some_and(|model| {
+                self.models
+                    .iter()
+                    .any(|(candidate, result)| candidate.path == model.path && result.is_ok())
             });
-            if config!=before {let _=self.controller.configure(config);self.update_model_readiness();self.persist();}
-            match self.controller.model(){ModelState::Ready=>{ui.colored_label(Color32::LIGHT_GREEN,"Ready — local model, selected language");},ModelState::Checking=>{ui.spinner();ui.label("Validating model bytes locally…");},ModelState::Invalid(reason)=>{ui.colored_label(Color32::LIGHT_RED,reason);},ModelState::NotConfigured=>{ui.label("Choose and validate a local model to enable transcription. Plain recording is available.");}}
+            ui.add_enabled_ui(config.model.is_some(), |ui| {
+                let language_response = egui::ComboBox::from_id_salt("language")
+                    .selected_text(language_label(language))
+                    .width(ui.available_width())
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut language,
+                            Language::Portuguese,
+                            "Português (Brasil)",
+                        );
+                        ui.add_enabled_ui(supports_english, |ui| {
+                            ui.selectable_value(&mut language, Language::English, "English");
+                        });
+                    })
+                    .response
+                    .labelled_by(label.id);
+                let _ = language_response;
+            });
+            if let Some(model) = &mut config.model {
+                model.language = language;
+            }
         });
+        if config != before {
+            let _ = self.controller.configure(config);
+            self.update_model_readiness();
+            self.persist();
+        }
+        match self.controller.model() {
+            ModelState::Ready => {
+                let readiness = ui.label(
+                    RichText::new("Ready · local model, selected language")
+                        .size(14.0)
+                        .color(SECONDARY),
+                );
+                let _ = readiness;
+            }
+            ModelState::Checking => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Checking local models…");
+                });
+            }
+            ModelState::Invalid(reason) => {
+                ui.colored_label(Color32::LIGHT_RED, reason);
+            }
+            ModelState::NotConfigured => {
+                ui.label(RichText::new("Choose a compatible local model for transcription. You can still record audio.").size(14.0).color(SECONDARY));
+            }
+        }
     }
     fn record_controls(&mut self, ui: &mut egui::Ui) {
         let mut config = self.controller.config().clone();
         let before = config.clone();
-        ui.add_enabled_ui(!self.busy(),|ui| {
-            ui.horizontal(|ui|{ui.selectable_value(&mut config.mode,RecordingMode::Microphone,"Microphone");ui.selectable_value(&mut config.mode,RecordingMode::MicrophoneAndComputer,"Microphone + computer");});
-            device_picker(ui,"Microphone",DeviceKind::Microphone,&self.devices,&mut config.microphone_id);
-            if config.mode==RecordingMode::MicrophoneAndComputer {device_picker(ui,"Computer output",DeviceKind::ComputerOutput,&self.devices,&mut config.output_id);ui.label("Records every sound on the selected output, including notifications. Use headphones for calls.");}
-            ui.horizontal(|ui|{if ui.button("Save folder…").clicked()&&let Some(path)=rfd::FileDialog::new().pick_folder(){config.save_folder=path;}ui.label(if config.save_folder.as_os_str().is_empty(){"Choose where to save WAV recordings".into()}else{config.save_folder.display().to_string()});});
-            ui.checkbox(&mut config.live_transcription,"Transcribe while recording (local)");
-            if ui.button("Refresh audio devices").clicked(){self.refresh_devices();}
+        ui.add_enabled_ui(!self.busy(), |ui| {
+            let label = ui.horizontal(|ui| {
+                let label=ui.label("Capture mode");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
+                    if ui.add(egui::Button::new(RichText::new("Refresh").size(14.0))).on_hover_text("Refresh audio devices").clicked(){self.refresh_devices();}
+                });
+                label
+            }).inner;
+            egui::ComboBox::from_id_salt("capture_mode")
+                .selected_text(RichText::new(match config.mode { RecordingMode::Microphone => "Microphone only", RecordingMode::MicrophoneAndComputer => "Microphone + computer audio" }).size(14.0))
+                .width(ui.available_width()).truncate().show_ui(ui, |ui| {
+                    ui.selectable_value(&mut config.mode, RecordingMode::Microphone, "Microphone only");
+                    ui.selectable_value(&mut config.mode, RecordingMode::MicrophoneAndComputer, "Microphone + computer audio");
+                }).response.labelled_by(label.id);
+            device_picker(ui, "Microphone", DeviceKind::Microphone, &self.devices, &mut config.microphone_id);
+            if config.mode == RecordingMode::MicrophoneAndComputer {
+                device_picker(ui, "Computer output", DeviceKind::ComputerOutput, &self.devices, &mut config.output_id);
+                ui.label(RichText::new("Includes all sound from this output, including calls and notifications. Use headphones for calls.").size(14.0).color(SECONDARY));
+            }
+            ui.label("Save recordings to");
+            let folder = if config.save_folder.as_os_str().is_empty() { "Choose a save folder".into() } else { config.save_folder.display().to_string() };
+            ui.label(RichText::new(folder).size(14.0).color(SECONDARY));
+            if ui.add_sized([ui.available_width(), 36.0], egui::Button::new("Choose folder…")).clicked()
+                && let Some(folder) = rfd::FileDialog::new().pick_folder() { config.save_folder = folder; }
+            ui.checkbox(&mut config.live_transcription, "Transcribe while recording");
         });
         if config != before {
             let _ = self.controller.configure(config);
             self.persist();
         }
-        ui.label("48 kHz stereo WAV · automatic stop at 6 hours");
-        let seconds = self.frames / 48_000;
+    }
+    fn file_controls(&mut self, ui: &mut egui::Ui) {
+        ui.label("Audio recording");
         ui.label(
-            RichText::new(format!(
-                "{:02}:{:02}:{:02}",
-                seconds / 3600,
-                (seconds / 60) % 60,
-                seconds % 60
-            ))
-            .size(40.0)
-            .monospace(),
+            RichText::new(
+                self.file
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "No file selected".into()),
+            )
+            .size(14.0)
+            .color(SECONDARY),
         );
-        ui.add(egui::ProgressBar::new(self.peak.clamp(0.0, 1.0)).text("Input level"));
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    !self.busy(),
-                    egui::Button::new("Start recording").fill(Color32::from_rgb(30, 112, 99)),
-                )
-                .clicked()
-            {
+        let picker = ui.add_enabled(
+            !self.busy(),
+            egui::Button::new("Choose WAV or MP3…")
+                .min_size(egui::vec2(ui.available_width(), 36.0)),
+        );
+        if picker.clicked()
+            && let Some(path) = rfd::FileDialog::new()
+                .add_filter("Audio", &["wav", "mp3"])
+                .pick_file()
+        {
+            self.file = Some(path);
+        }
+        ui.label(
+            RichText::new("Your original recording stays unchanged.")
+                .size(14.0)
+                .color(SECONDARY),
+        );
+    }
+    fn primary_action(&mut self, ui: &mut egui::Ui) {
+        let recording = matches!(
+            self.controller.capture(),
+            CaptureState::Starting | CaptureState::Recording
+        );
+        let saving = matches!(
+            self.controller.capture(),
+            CaptureState::Stopping | CaptureState::Saving
+        );
+        let text_job = self.job.is_some() && self.job_mode != Some(JobMode::Models);
+        let (label, enabled) = if recording {
+            ("Stop and save", true)
+        } else if saving {
+            ("Saving audio…", false)
+        } else if text_job {
+            ("Cancel transcription", true)
+        } else if self.file_tab {
+            (
+                "Transcribe file",
+                !self.busy()
+                    && self.file.is_some()
+                    && self.controller.model() == &ModelState::Ready,
+            )
+        } else {
+            ("Start recording", !self.busy())
+        };
+        let primary = ui.add_enabled(
+            enabled,
+            egui::Button::new(RichText::new(label).color(Color32::from_rgb(20, 42, 69)))
+                .fill(ACCENT)
+                .min_size(egui::vec2(150.0, 44.0)),
+        );
+        if primary.clicked() {
+            if recording {
+                self.stop_recording();
+            } else if text_job {
+                if let Some(job) = &self.job {
+                    self.user_cancelled = true;
+                    job.cancel();
+                }
+            } else if self.file_tab {
+                self.start_file();
+            } else {
                 self.start_recording();
             }
-            if ui
-                .add_enabled(
-                    matches!(
-                        self.controller.capture(),
-                        CaptureState::Starting | CaptureState::Recording
-                    ),
-                    egui::Button::new("Stop and save").fill(Color32::from_rgb(140, 63, 49)),
-                )
-                .clicked()
+        }
+    }
+    fn transcript_actions(&mut self, ui: &mut egui::Ui) {
+        let available = !self.transcript.stable_text().is_empty();
+        ui.horizontal_wrapped(|ui| {
+            if ui.add_enabled(available, egui::Button::new("Copy text")).clicked() { ui.ctx().copy_text(self.transcript.export_text()); }
+            if ui.add_enabled(available, egui::Button::new("Save text…")).clicked()
+                && let Some(path) = rfd::FileDialog::new().set_file_name("transcript.txt").add_filter("UTF-8 text", &["txt"]).save_file() {
+                match self.transcript.save_new(&path) { Ok(()) => self.notice = format!("Text saved: {}", path.display()), Err(error) => self.notice = format!("Text was not saved: {error}. Choose a new filename; the text remains available.") }
+            }
+            if available && ui.add_enabled(!self.busy(), egui::Button::new("Discard transcript")).clicked() { self.transcript = Transcript::default(); }
+            if self.job.is_some() && (matches!(self.controller.capture(), CaptureState::Starting | CaptureState::Recording | CaptureState::Stopping | CaptureState::Saving) || self.job_mode == Some(JobMode::Models))
             {
-                self.stop_recording();
+                let cancel=ui.button(if self.job_mode == Some(JobMode::Models) { "Cancel model check" } else { "Cancel transcription" });
+                if cancel.clicked() && let Some(job)=&self.job {self.user_cancelled=true;job.cancel();}
             }
         });
+    }
+    fn audio_result(&self, ui: &mut egui::Ui) {
         match self.controller.capture() {
             CaptureState::Finished(AudioOutcome::Completed(path)) => {
                 ui.label(format!("Saved: {}", path.display()));
@@ -605,55 +783,169 @@ impl Desktop {
             _ => {}
         }
     }
-    fn file_controls(&mut self, ui: &mut egui::Ui) {
-        ui.label("Transcribe an existing recording without changing the original.");
-        if ui
-            .add_enabled(!self.busy(), egui::Button::new("Choose WAV or MP3…"))
-            .clicked()
-            && let Some(path) = rfd::FileDialog::new()
-                .add_filter("Audio", &["wav", "mp3"])
-                .pick_file()
-        {
-            self.file = Some(path);
+    fn workspace(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::top("workspace_action")
+            .resizable(false)
+            .frame(egui::Frame::new())
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let status_width = (ui.available_width() - 206.0).max(80.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(status_width, 70.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            let heading = if self.busy() {
+                                &self.status
+                            } else if self.file_tab {
+                                "Ready to transcribe"
+                            } else {
+                                "Ready to record"
+                            };
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(heading).size(14.0).color(SECONDARY),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(&self.status);
+                            if !self.file_tab
+                                || matches!(
+                                    self.controller.capture(),
+                                    CaptureState::Starting
+                                        | CaptureState::Recording
+                                        | CaptureState::Stopping
+                                        | CaptureState::Saving
+                                )
+                            {
+                                let seconds = self.frames / 48_000;
+                                let elapsed = if seconds >= 3_600 {
+                                    format!(
+                                        "{:02}:{:02}:{:02}",
+                                        seconds / 3_600,
+                                        (seconds / 60) % 60,
+                                        seconds % 60
+                                    )
+                                } else {
+                                    format!("{:02}:{:02}", seconds / 60, seconds % 60)
+                                };
+                                ui.label(RichText::new(elapsed).size(30.0));
+                            } else {
+                                ui.label(RichText::new("Local transcription").size(22.0));
+                            }
+                        },
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.primary_action(ui)
+                    });
+                });
+                if !self.file_tab {
+                    ui.horizontal(|ui| {
+                        let label =
+                            ui.label(RichText::new("Input level").size(14.0).color(SECONDARY));
+                        ui.add(
+                            egui::ProgressBar::new(self.peak.clamp(0.0, 1.0))
+                                .desired_width(140.0)
+                                .desired_height(6.0),
+                        )
+                        .labelled_by(label.id);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new("WAV · up to 6 hours")
+                                    .size(13.0)
+                                    .color(SECONDARY),
+                            );
+                        });
+                    });
+                }
+            });
+        let extra_actions = !self.transcript.stable_text().is_empty() || self.job.is_some();
+        let footer_height = if ui.available_width() < 620.0 && extra_actions {
+            88.0
+        } else {
+            44.0
+        };
+        let footer = egui::Panel::bottom("transcript_actions")
+            .exact_size(footer_height)
+            .frame(egui::Frame::new())
+            .show(ui, |ui| self.transcript_actions(ui));
+        let _ = footer;
+        let has_result = matches!(self.controller.capture(), CaptureState::Finished(_))
+            || !self.notice.is_empty();
+        if has_result {
+            egui::Panel::bottom("workspace_result")
+                .default_size(80.0)
+                .max_size(140.0)
+                .resizable(false)
+                .frame(egui::Frame::new())
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("result_scroll")
+                        .show(ui, |ui| {
+                            self.audio_result(ui);
+                            if !self.notice.is_empty() {
+                                ui.colored_label(Color32::LIGHT_YELLOW, &self.notice);
+                                if ui.small_button("Dismiss message").clicked() {
+                                    self.notice.clear();
+                                }
+                            }
+                        });
+                });
         }
-        if let Some(path) = &self.file {
-            ui.label(path.display().to_string());
-        }
-        if ui
-            .add_enabled(
-                !self.busy()
-                    && self.file.is_some()
-                    && self.controller.model() == &ModelState::Ready,
-                egui::Button::new("Transcribe file").fill(Color32::from_rgb(30, 112, 99)),
-            )
-            .clicked()
-        {
-            self.start_file();
-        }
-    }
-    fn transcript_controls(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        ui.heading("Transcript");
-        if let Some(reason) = self.transcript.reason() {
-            ui.colored_label(Color32::LIGHT_RED, format!("Incomplete: {reason}"));
-        }
-        ui.horizontal(|ui| {
-            let available=!self.transcript.stable_text().is_empty();
-            if ui.add_enabled(available,egui::Button::new("Copy finalized text")).clicked(){ui.ctx().copy_text(self.transcript.export_text());}
-            if ui.add_enabled(available,egui::Button::new("Save text…")).clicked()&&let Some(path)=rfd::FileDialog::new().set_file_name("transcript.txt").add_filter("UTF-8 text",&["txt"]).save_file(){match self.transcript.save_new(&path){Ok(())=>self.notice=format!("Text saved: {}",path.display()),Err(error)=>self.notice=format!("Text was not saved: {error}. Choose a new filename; the text remains available.")}}
-            if ui.add_enabled(!self.busy()&&available,egui::Button::new("Discard transcript")).clicked(){self.transcript=Transcript::default();}
-            if ui.add_enabled(self.job.is_some(),egui::Button::new("Cancel transcription")).clicked() && let Some(job)=&self.job{self.user_cancelled=true;job.cancel();}
-        });
-        egui::ScrollArea::vertical()
-            .max_height(260.0)
+        egui::Panel::top("transcript_heading")
+            .resizable(false)
+            .frame(egui::Frame::new())
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.strong("Transcript");
+                    let state = match self.controller.transcription() {
+                        TranscriptionState::Idle => {
+                            if self.file_tab {
+                                "Waiting for a recording"
+                            } else {
+                                "Waiting for speech"
+                            }
+                        }
+                        TranscriptionState::Live => "Live · pending words may change",
+                        TranscriptionState::File(_) => "Processing locally",
+                        TranscriptionState::Finalizing => "Finalizing text",
+                        TranscriptionState::Finished(TextOutcome::Completed) => "Completed",
+                        TranscriptionState::Finished(TextOutcome::NoSpeech) => "No speech detected",
+                        TranscriptionState::Finished(TextOutcome::Cancelled) => "Cancelled",
+                        TranscriptionState::Finished(TextOutcome::Incomplete(_)) => "Incomplete",
+                        TranscriptionState::Finished(TextOutcome::Failed(_)) => "Failed",
+                    };
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(state).size(14.0).color(SECONDARY))
+                                .truncate(),
+                        );
+                    });
+                });
+                if let Some(reason) = self.transcript.reason() {
+                    ui.colored_label(Color32::LIGHT_RED, format!("Incomplete: {reason}"));
+                }
+            });
+        let scroll = egui::ScrollArea::vertical()
+            .id_salt("transcript_scroll")
+            .auto_shrink([false, false])
+            .stick_to_bottom(true)
             .show(ui, |ui| {
                 let mut text = self.transcript.stable_text();
                 if text.is_empty() {
-                    ui.weak("Finalized words will appear here.");
+                    ui.label(
+                        RichText::new(if self.file_tab {
+                            "Select a recording to create a transcript."
+                        } else {
+                            "Spoken words will appear here while you record."
+                        })
+                        .color(SECONDARY),
+                    );
                 } else {
                     ui.add(
                         egui::TextEdit::multiline(&mut text)
                             .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Body)
+                            .frame(egui::Frame::new())
                             .interactive(false),
                     );
                 }
@@ -662,10 +954,86 @@ impl Desktop {
                     ui.label(
                         RichText::new(format!("Pending (may change): {pending}"))
                             .italics()
-                            .color(Color32::from_gray(165)),
+                            .color(SECONDARY),
                     );
                 }
             });
+        let _ = scroll;
+    }
+    fn draw(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::top("app_header")
+            .exact_size(54.0)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(PANEL)
+                    .inner_margin(egui::Margin::symmetric(20, 9)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("rustcorder").size(18.0).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new("Works offline").size(14.0).color(SECONDARY));
+                    });
+                });
+            });
+        egui::Panel::top("app_tabs")
+            .exact_size(54.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(BACKGROUND)
+                    .inner_margin(egui::Margin::symmetric(20, 9)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (file, title) in [(false, "Record"), (true, "Transcribe file")] {
+                        let selected = self.file_tab == file;
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new(title).color(if selected {
+                                    ACCENT
+                                } else {
+                                    TEXT
+                                }))
+                                .fill(PANEL)
+                                .stroke(egui::Stroke::new(
+                                    1.0,
+                                    if selected { ACCENT } else { BORDER },
+                                )),
+                            )
+                            .clicked()
+                        {
+                            self.file_tab = file;
+                        }
+                    }
+                });
+            });
+        let settings = egui::Panel::left("settings")
+            .exact_size(290.0)
+            .resizable(false)
+            .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(20))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                egui::ScrollArea::vertical()
+                    .id_salt("settings_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if self.file_tab {
+                            self.file_controls(ui);
+                        } else {
+                            self.record_controls(ui);
+                        }
+                        ui.add_space(4.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+                        self.model_controls(ui);
+                    });
+            });
+        let _ = settings;
+        let workspace = egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(24))
+            .show(ui, |ui| self.workspace(ui));
+        let _ = workspace;
     }
 }
 
@@ -691,33 +1059,7 @@ impl eframe::App for Desktop {
         }
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading(RichText::new("rustcorder").size(30.0));
-                ui.weak("Record. Transcribe. Keep it local.");
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.file_tab, false, "Record");
-                    ui.selectable_value(&mut self.file_tab, true, "Transcribe file");
-                });
-                if self.file_tab {
-                    self.file_controls(ui);
-                } else {
-                    self.record_controls(ui);
-                }
-                ui.separator();
-                self.model_controls(ui);
-                ui.separator();
-                ui.label(&self.status);
-                if !self.notice.is_empty() {
-                    ui.colored_label(Color32::LIGHT_YELLOW, &self.notice);
-                    if ui.small_button("Dismiss message").clicked() {
-                        self.notice.clear();
-                    }
-                }
-                self.transcript_controls(ui);
-            });
-        });
+        self.draw(ui);
         if self.close_prompt {
             egui::Window::new("Close rustcorder?").collapsible(false).resizable(false).show(ui.ctx(),|ui| {
                 ui.label("Active audio will be stopped and saved. Transcription will be cancelled. Unsaved text will be discarded.");
@@ -732,6 +1074,73 @@ impl eframe::App for Desktop {
                 });
             });
         }
+    }
+}
+
+const BACKGROUND: Color32 = Color32::from_rgb(32, 34, 36);
+const PANEL: Color32 = Color32::from_rgb(40, 43, 45);
+const BORDER: Color32 = Color32::from_rgb(72, 78, 84);
+const TEXT: Color32 = Color32::from_rgb(240, 242, 244);
+const SECONDARY: Color32 = Color32::from_rgb(182, 190, 199);
+const ACCENT: Color32 = Color32::from_rgb(157, 198, 255);
+
+fn configure_style(ctx: &egui::Context) {
+    let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.interact_size = egui::vec2(40.0, 36.0);
+    style.spacing.button_padding = egui::vec2(11.0, 7.0);
+    for text in [
+        egui::TextStyle::Body,
+        egui::TextStyle::Button,
+        egui::TextStyle::Monospace,
+    ] {
+        style
+            .text_styles
+            .insert(text, egui::FontId::proportional(16.0));
+    }
+    style
+        .text_styles
+        .insert(egui::TextStyle::Small, egui::FontId::proportional(14.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Heading, egui::FontId::proportional(18.0));
+    style.visuals = egui::Visuals::dark();
+    style.visuals.override_text_color = Some(TEXT);
+    style.visuals.panel_fill = BACKGROUND;
+    style.visuals.window_fill = PANEL;
+    style.visuals.extreme_bg_color = BACKGROUND;
+    style.visuals.selection.bg_fill = Color32::from_rgb(40, 78, 124);
+    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, BORDER);
+    style.visuals.widgets.inactive.bg_fill = PANEL;
+    style.visuals.widgets.inactive.weak_bg_fill = PANEL;
+    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, BORDER);
+    ctx.set_style_of(egui::Theme::Dark, style);
+    ctx.set_theme(egui::ThemePreference::Dark);
+}
+
+fn language_label(language: Language) -> &'static str {
+    match language {
+        Language::Portuguese => "Português (Brasil)",
+        Language::English => "English",
+    }
+}
+
+fn model_label(candidate: &ModelCandidate, result: &Result<ModelMetadata, String>) -> String {
+    match result {
+        Ok(metadata) => format!(
+            "{} · {}",
+            match metadata.family.as_str() {
+                "base" => "Base",
+                "small" => "Small",
+                other => other,
+            },
+            if metadata.multilingual {
+                "multilingual"
+            } else {
+                "English only"
+            }
+        ),
+        Err(_) => candidate.display_name.clone(),
     }
 }
 
@@ -771,22 +1180,26 @@ fn device_picker(
     devices: &[DeviceInfo],
     selected: &mut Option<String>,
 ) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        let name = devices
-            .iter()
-            .find(|d| Some(&d.id) == selected.as_ref())
-            .map(|d| d.name.as_str())
-            .unwrap_or("Select an available device");
-        egui::ComboBox::from_id_salt(label)
-            .selected_text(name)
-            .width(420.0)
-            .show_ui(ui, |ui| {
-                for device in devices.iter().filter(|d| d.kind == kind) {
-                    ui.selectable_value(selected, Some(device.id.clone()), &device.name);
-                }
-            });
-    });
+    let caption = ui.label(label);
+    let name = devices
+        .iter()
+        .find(|device| Some(&device.id) == selected.as_ref())
+        .map(|device| device.name.as_str())
+        .unwrap_or("Select an available device");
+    let picker = egui::ComboBox::from_id_salt(label)
+        .selected_text(name)
+        .width(ui.available_width())
+        .truncate()
+        .show_ui(ui, |ui| {
+            for device in devices.iter().filter(|device| device.kind == kind) {
+                ui.selectable_value(selected, Some(device.id.clone()), &device.name);
+            }
+        });
+    picker
+        .response
+        .clone()
+        .labelled_by(caption.id)
+        .on_hover_text(name);
 }
 
 fn ui_busy(controller: &Controller, resources_pending: bool) -> bool {

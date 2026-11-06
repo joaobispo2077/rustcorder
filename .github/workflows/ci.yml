@@ -140,7 +140,8 @@ jobs:
   mutation_rust:
     name: Mutation Rust light
     runs-on: windows-2025
-    timeout-minutes: 30
+    # Allow cold Windows setup and evidence upload around the 20-minute engine limit.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -208,7 +209,8 @@ jobs:
   package:
     name: Package smoke
     runs-on: windows-2025
-    timeout-minutes: 25
+    # Allow cold Windows setup and evidence upload around the 20-minute package limit.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

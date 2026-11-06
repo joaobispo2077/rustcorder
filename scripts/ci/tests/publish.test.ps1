@@ -31,6 +31,8 @@ function New-PublishFixture {
         ci=@{id=404;run_attempt=1;workflow_id=201;head_sha=('a'*40);event='push';head_branch='release';
             path='.github/workflows/ci.yml';status='completed';conclusion='success';
             repository=@{id=101;full_name='joaobispo2077/rustcorder'};head_repository=@{id=101;full_name='joaobispo2077/rustcorder'}}}
+    $taskCopy = ${function:Copy-PublishValue}
+    $taskAssert = ${function:Assert-PublishTest}
     $taskTransport = {
         param($Request)
         $taskKey = $Request.method + ' ' + $Request.path
@@ -44,7 +46,7 @@ function New-PublishFixture {
         if ($Request.method -ceq 'GET' -and $Request.path -ceq ($taskPrefix+'/git/ref/heads/release')) {
             $taskResponse=@{status=200;body=@{ref='refs/heads/release';object=@{type='commit';sha=$taskState.tip}}}
         } elseif ($Request.method -ceq 'GET' -and $Request.path -ceq ($taskPrefix+'/actions/runs/404')) {
-            $taskResponse=@{status=200;body=(Copy-PublishValue $taskState.ci)}
+            $taskResponse=@{status=200;body=(& $taskCopy $taskState.ci)}
         } elseif ($Request.method -ceq 'GET' -and $Request.path -ceq ($taskPrefix+'/git/ref/tags/v0.1.0')) {
             $taskResponse=if($taskState.ref){@{status=200;body=$taskState.ref}}else{@{status=404;body=$null}}
         } elseif ($Request.method -ceq 'GET' -and $Request.path -cmatch ('^'+[regex]::Escape($taskPrefix)+'/git/tags/[a-f0-9]{40}$')) {
@@ -58,18 +60,18 @@ function New-PublishFixture {
         } elseif ($Request.method -ceq 'GET' -and $Request.path -cmatch ('^'+[regex]::Escape($taskPrefix)+'/releases\?per_page=100&page=([1-9][0-9]*)$')) {
             $taskResponse=@{status=200;body=@(if($Matches[1] -ceq '1' -and $taskState.release){$taskState.release})}
         } elseif ($Request.method -ceq 'POST' -and $Request.path -ceq ($taskPrefix+'/releases')) {
-            Assert-PublishTest ($null -ne $taskState.ref) 'A draft must never implicitly create its own tag.'
+            & $taskAssert ($null -ne $taskState.ref) 'A draft must never implicitly create its own tag.'
             $taskState.release=@{id=77;tag_name=$Request.body.tag_name;target_commitish=$Request.body.target_commitish;
                 body=$Request.body.body;draft=$Request.body.draft;prerelease=$Request.body.prerelease;
                 upload_url='https://uploads.github.com/repos/joaobispo2077/rustcorder/releases/77/assets{?name,label}'}
             $taskResponse=@{status=201;body=$taskState.release}
         } elseif ($Request.method -ceq 'GET' -and $Request.path -ceq ($taskPrefix+'/releases/77')) {
-            $taskResponse=if($taskState.release){@{status=200;body=(Copy-PublishValue $taskState.release)}}else{@{status=404;body=$null}}
+            $taskResponse=if($taskState.release){@{status=200;body=(& $taskCopy $taskState.release)}}else{@{status=404;body=$null}}
         } elseif ($Request.method -ceq 'GET' -and $Request.path -cmatch ('^'+[regex]::Escape($taskPrefix)+'/releases/77/assets\?per_page=100&page=([1-9][0-9]*)$')) {
             $taskResponse=@{status=200;body=@(if($Matches[1] -ceq '1'){$taskState.assets.ToArray()})}
         } elseif ($Request.method -ceq 'POST' -and $Request.path -cmatch ('^'+[regex]::Escape($taskPrefix)+'/releases/77/assets\?name=(.+)$')) {
             $taskName=[uri]::UnescapeDataString($Matches[1]);$taskBytes=[IO.File]::ReadAllBytes($Request.file)
-            Assert-PublishTest (@($taskState.assets | Where-Object {$_.name -ceq $taskName}).Count -eq 0) 'Assets must never be overwritten.'
+            & $taskAssert (@($taskState.assets | Where-Object {$_.name -ceq $taskName}).Count -eq 0) 'Assets must never be overwritten.'
             $taskAsset=@{id=$taskState.next_id;name=$taskName;size=$taskBytes.Length;state='uploaded';bytes=$taskBytes}
             $taskState.next_id++;[void]$taskState.assets.Add($taskAsset)
             $taskResponse=@{status=201;body=$taskAsset}
@@ -77,7 +79,7 @@ function New-PublishFixture {
             $taskId=[long]$Matches[1];$taskAsset=@($taskState.assets | Where-Object {$_.id -eq $taskId})[0]
             $taskResponse=@{status=200;bytes=([byte[]]$taskAsset.bytes.Clone())}
         } elseif ($Request.method -ceq 'PATCH' -and $Request.path -ceq ($taskPrefix+'/releases/77')) {
-            Assert-PublishTest ($Request.body.draft -is [bool] -and -not $Request.body.draft) 'Only verified draft publication is allowed.'
+            & $taskAssert ($Request.body.draft -is [bool] -and -not $Request.body.draft) 'Only verified draft publication is allowed.'
             $taskState.release.draft=$Request.body.draft;$taskResponse=@{status=200;body=$taskState.release}
         } else { throw ('Unexpected mock endpoint: '+$taskKey) }
         if ($taskFail -and $taskFail.key -ceq $taskKey -and $taskFail.remaining -gt 0 -and $taskFail.after) {

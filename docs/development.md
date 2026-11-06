@@ -202,3 +202,14 @@ still pending because no clean VM was available in this session.
 End users must not need Rust, CMake, libclang, Python, developer caches, API keys,
 an AI server or a first-run download. Retain pending clean-machine validation even
 after a development-machine launch/import check succeeds.
+
+## Corrected desktop layout preview
+
+The latest local UI build is
+`dist/rustcorder-windows-layout-preview-final/rustcorder.exe`, also available in
+the ZIP with the same folder name. It retains the bundled speech detector and
+licenses from the validated packaging procedure above. The source changes restore
+the agreed fixed sidebar and flexible transcript workspace; the recording and
+inference engines are unchanged. Earlier preview paths above describe historical
+packaging checkpoints. See [layout correction](ui-layout-correction.md) for actual
+rendering checks, native inspection and the proposed commit split.

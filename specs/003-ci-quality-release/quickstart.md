@@ -103,10 +103,15 @@ a persistent personal machine. Neither path claims physical-device acceptance.
 Local implementation now passes the quality/policy suites, real Release-package
 native smoke, publisher failure/retry fixtures and both engines' light/full
 mutation profiles. See [actual measurements and limits](../../docs/ci-quality-release-validation.md).
-Hosted acceptance below remains pending: remote inspection found only main,
-without protection or a release-publish environment. The owner must establish the
-documented prerequisites before the real workflows can be exercised. Agents have
-not created branches, committed/pushed, tagged or published.
+The initial remote inspection found only main, without protection or a
+release-publish environment. The user subsequently authorized branch creation,
+commits and pushes, and approved 40 logical commit groups. Develop/release now
+exist at the original main baseline; the feature branch's complete hosted CI and
+independently remeasured readiness pass. Draft PR #1 proposes promotion to develop.
+See [hosted results](../../docs/ci-hosted-validation.md) and the
+[promotion review](../../docs/ci-promotion-review.md). No product tag or release
+was published. Release-only native acceptance, further timing/full runs,
+trusted-main controller adoption and actual remote enforcement remain pending.
 
 1. The user establishes develop/release and permitted promotions. Workflow files
    must exist on main for dispatch/workflow-run control execution.

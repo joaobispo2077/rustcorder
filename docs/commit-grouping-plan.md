@@ -398,3 +398,19 @@ Separate cumulative indexes and patches are under the ignored
 approval. All 355 support tests and publisher boundaries pass with Git identity
 disabled; hosted confirmation requires a push containing these changes. Product
 version, changelog and tags remain unchanged.
+
+## Portable execution and promotion review
+
+The user approved groups 37–40. They were committed and pushed in order, ending
+at `49dee970193a774ef3b34625757414c50cfa6cbd`. All 40 approved implementation
+commits are pushed. The complete hosted run passed, with all 17 applicable raw
+receipts and final readiness independently verified. Main, develop, release and
+product tags were preserved. Draft PR #1 now targets develop.
+
+The next proposal is documentation group 41 followed by two reviewed branch
+promotions. The exact messages, files, destination baselines and execution
+conditions are in [CI promotion review](ci-promotion-review.md). Each promotion
+preserves the reviewed atomic history and waits for its own current-head PR
+checks. These new commit groups have not yet been approved. Package/native and
+remaining acceptance tasks are still pending; a passing feature push does not
+complete the release-only lane or authorize product publication.

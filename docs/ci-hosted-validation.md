@@ -127,3 +127,46 @@ passes. Final command/exit records and raw logs use the fresh
 `portable-final-all-node.*` and `portable-final-publisher.*` labels. The explicit
 connection/stream timeout test passes as well. Hosted confirmation of the complete
 final tree remains pending, along with T081–T087.
+
+## First complete hosted readiness
+
+[Run 42168293447](https://github.com/joaobispo2077/rustcorder/actions/runs/42168293447),
+attempt 1, passed for `49dee970193a774ef3b34625757414c50cfa6cbd`. All six applicable
+jobs passed: policy, Rust quality, Rust light mutation, Node light mutation,
+report and readiness. Package smoke was correctly excluded on this feature push.
+
+The downloaded final certification reports ready=true. Independent raw-file hash
+verification, data-only remeasurement and readiness recomputation accepted all
+17 applicable receipts with zero collection errors. Source and tested SHAs both
+match the commit above. Retained evidence and `verified-summary.json` are under
+`.build/hosted-ci/42168293447/`.
+
+| Measurement | Accepted result |
+| --- | --- |
+| Node support tests | 355/355, zero skipped/cancelled |
+| Rust library tests | 101/101 |
+| Integration tests | 64 passed; five explicitly named external cases ignored |
+| Headless UI tests | 15/15; simulated rendering/input remains distinct from a native window |
+| Coverage | 4,037/5,394 = 74.84%, floor 72% |
+| Duplication | 0.6274%, ceiling 2% |
+| Rust light mutation | 35 detected, zero survived, one nonviable; 35/35 viable = 100%; 701,626 ms / 11.69 minutes |
+| Node light mutation | 382 detected, 298 survived, zero nonviable; 382/680 = 56.18%; 278,955 ms / 4.65 minutes |
+
+The whole run took 18 minutes 41 seconds, from 02:24:59 to 02:43:40 on
+2026-11-06 in America/Sao_Paulo. It restored the native cache from commit
+`2671e8b958c160284afd830749f5f16697288510`; the Rust job log records the cache hit.
+This is one complete warm ordinary-CI attempt. It is not a cold-cache acceptance
+run, three warm attempts, hosted full mutation or release-package acceptance.
+T081–T087 therefore remain unchecked.
+
+The user approved groups 37–40, and they were committed and pushed in order.
+The working tree was clean after all 40 approved commits. Main, develop and
+release still pointed to the original baseline, and no product version,
+changelog entry or tag was changed.
+
+Draft [PR #1](https://github.com/joaobispo2077/rustcorder/pull/1) now proposes
+feature/ci-quality-release to develop. It was created at the verified commit
+above, without merging or requesting reviewers. Its PR-specific CI is a separate
+attempt; a successful feature-push run does not substitute for those checks.
+The [promotion review](ci-promotion-review.md) proposes the next controlled
+branch steps required to exercise the release-only native package lane.

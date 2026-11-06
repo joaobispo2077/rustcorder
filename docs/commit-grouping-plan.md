@@ -4,6 +4,9 @@ Prepared 2026-11-06 for review. These are proposed commits; staging does not
 create a commit, branch, tag or remote change. The user authorized branches,
 commits and pushes, and explicitly requires approval of these groups first.
 
+Reviews and executions are retained chronologically. The final review section
+identifies the changes still awaiting approval.
+
 The starting branch is `main` at `8b200d21c07d668e2e492c68139970031b923c65`.
 After approval, create `feature/ci-quality-release` from that commit, commit
 these groups in order, then push the completed branch. Keep the reviewed branch
@@ -373,3 +376,25 @@ Each has a separate cumulative index and patch under the ignored
 approval of groups 28–31 does not include them. The mutation regression is red
 until group 36, so push the complete reviewed sequence together. Hosted
 confirmation of these fixes is pending; no product release action is proposed.
+
+## Hosted compatibility execution and portability review
+
+The user approved groups 32–36. All five were committed and pushed in order,
+ending at `2671e8b958c160284afd830749f5f16697288510`. Base branches and product tags
+were preserved. The next hosted diagnostics identified an ambient Git author
+dependency in the new fixture and an HTTP 503 during pinned tool provisioning.
+
+These four small groups are proposed on the same feature branch:
+
+| Order | Proposed Conventional Commit | Responsibility and files |
+| --- | --- | --- |
+| 37 | `docs(ci): record portable fixture validation` | Current hosted diagnostics, test results and review status: docs/ci-hosted-validation.md, docs/commit-grouping-plan.md |
+| 38 | `test(release): isolate candidate commit identity` | Reuse the fixed fixture author and assert it: scripts/ci/tests/release-flow.test.mjs |
+| 39 | `test(ci): enforce bounded pinned downloads` | Verify request bounds and preserved checksum/cache behavior: scripts/ci/tests/download.test.mjs |
+| 40 | `ci(setup): retry bounded pinned tool downloads` | Retry failed HTTP requests with explicit connection/stall timeouts: scripts/ci/setup-windows.ps1 |
+
+Separate cumulative indexes and patches are under the ignored
+`.build/commit-groups-portable/` directory. These four groups await their own
+approval. All 355 support tests and publisher boundaries pass with Git identity
+disabled; hosted confirmation requires a push containing these changes. Product
+version, changelog and tags remain unchanged.

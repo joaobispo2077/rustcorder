@@ -84,3 +84,46 @@ version and changelog are unchanged, with no product tag or publication.
 
 See [release-flow evidence](ci-quality-release-validation.md) and the
 [commit review](commit-grouping-plan.md) for the reviewed implementation history.
+
+## Second-run diagnostics and portability fixes
+
+Groups 32–36 were approved, committed and pushed through
+`2671e8b958c160284afd830749f5f16697288510`. Their
+[run 42162378323](https://github.com/joaobispo2077/rustcorder/actions/runs/42162378323)
+contains the publisher scope and native scratch-path fixes. It does not contain
+the following later fixture identity and tool-download changes.
+
+The preceding run at `a3bb571726ff1b80444a602cf2c4991d5967b3da` confirmed that
+workflow/promotion validation passes after develop was created. Its Node support
+step failed because the new release-flow fixture used an ambient Git author for
+its final candidate commit. Local Git configuration had hidden this dependency.
+The fixture now uses its existing `gitFixture` command wrapper, which supplies a
+fixed synthetic author/committer, and asserts that identity. Its complete seven
+reported tests pass with user.name and user.email explicitly empty. No real Git
+configuration is changed. Retained evidence is `red-no-git-identity.*` and
+`green-no-git-identity.*` under `.build/ci-evidence/release-flow/`.
+
+That run's Rust mutation provisioning also received HTTP 503 before evidence
+initialization. The failing job log is retained as
+`.build/hosted-ci/42161606371/mutation-setup.log`; no mutation outcome or successful
+setup receipt is invented for that failure. The existing required-job and
+missing-evidence checks still block readiness. A later feature push cancelled
+the remaining work in that run, so it is not a completed acceptance attempt.
+
+Pinned Windows tool downloads now request two retries, a two-second retry
+interval, and 120-second connection and stalled-stream timeouts. PowerShell
+documents these controls, including server Retry-After handling; the stream
+timeout is a stall bound, not an overall download duration. See the
+[official Invoke-WebRequest reference](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/invoke-webrequest?view=powershell-7.4).
+Downloads still use the pinned HTTPS URL, verify the exact checksum before
+promoting a partial file, and refuse a changed cached file. The new boundary
+test exercises the real asset helper with mocked request bytes and checks these
+arguments and cache/hash behavior; it does not claim to simulate the HTTP
+cmdlet's internal retry loop or prove external service recovery.
+
+The final local support suite passes 355/355 with no skipped or cancelled tests
+and Git author settings explicitly empty. The standalone publisher suite also
+passes. Final command/exit records and raw logs use the fresh
+`portable-final-all-node.*` and `portable-final-publisher.*` labels. The explicit
+connection/stream timeout test passes as well. Hosted confirmation of the complete
+final tree remains pending, along with T081–T087.

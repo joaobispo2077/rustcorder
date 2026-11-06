@@ -1,0 +1,14 @@
+{
+  "id": "native-gui-boundary",
+  "language": "Rust",
+  "severity": "error",
+  "message": "Native capture and inference modules must remain independent of GUI APIs.",
+  "files": [
+    "src/audio/**/*.rs",
+    "src/transcription/**/*.rs"
+  ],
+  "rule": {
+    "kind": "identifier",
+    "regex": "^(eframe|egui|rfd)$"
+  }
+}

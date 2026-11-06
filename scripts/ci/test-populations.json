@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "unit": {
+    "target": "lib",
+    "filter": null,
+    "required": true
+  },
+  "integration": {
+    "target": "integration",
+    "filter": null,
+    "required": true
+  },
+  "ui": {
+    "target": "lib",
+    "filter": "ui::tests",
+    "required": true
+  },
+  "external": [
+    "asr_feasibility::local_cpu_corpus_baseline",
+    "asr_speech_gate::local_speech_free_and_quiet_speech_gate",
+    "combined_recording::real_combined_start_stop_and_retained_wav",
+    "file_transcription::actual_file_worker_returns_progress_and_text_without_modifying_audio",
+    "microphone_recording::real_microphone_start_stop_and_retained_wav"
+  ]
+}

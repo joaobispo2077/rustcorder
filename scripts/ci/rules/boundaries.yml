@@ -1,0 +1,27 @@
+{
+  "id": "ui-native-boundary",
+  "language": "Rust",
+  "severity": "error",
+  "message": "UI must use application coordinators rather than native capture/inference APIs.",
+  "files": [
+    "src/ui.rs"
+  ],
+  "rule": {
+    "any": [
+      {
+        "kind": "identifier",
+        "regex": "^(whisper_rs|wasapi|windows)$"
+      },
+      {
+        "kind": "scoped_identifier",
+        "regex": "^(crate|self|super)::transcription::worker::"
+      },
+      {
+        "all": [
+          { "kind": "identifier", "regex": "^worker$" },
+          { "inside": { "kind": "use_declaration", "regex": "transcription", "stopBy": "end" } }
+        ]
+      }
+    ]
+  }
+}

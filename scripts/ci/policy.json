@@ -1,0 +1,215 @@
+{
+  "schema_version": 1,
+  "repository": "joaobispo2077/rustcorder",
+  "coverage": {
+    "floor": 72,
+    "baseline": {
+      "covered": 3790,
+      "total": 5202,
+      "measured_on": "2026-11-05",
+      "kind": "local",
+      "source_sha": "8b200d21c07d668e2e492c68139970031b923c65",
+      "dirty": true,
+      "description": "All-target Windows library/UI/integration/binary instrumentation, including embedded tests; not pure-unit coverage."
+    },
+    "paths": [
+      "src"
+    ],
+    "exclusions": []
+  },
+  "complexity": {
+    "max": 10,
+    "exceptions": [
+      {
+        "path": "src/audio/mod.rs",
+        "symbol": "record",
+        "ceiling": 54,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Coordinates capture clocks, sources, mixing, retention and bounded stopping.",
+        "expires": "2027-02-05"
+      },
+      {
+        "path": "src/audio/mod.rs",
+        "symbol": "record::<anonymous>@457:489",
+        "ceiling": 13,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Coordinates capture clocks, sources, mixing, retention and bounded stopping.",
+        "expires": "2027-02-05"
+      },
+      {
+        "path": "src/audio/windows.rs",
+        "symbol": "capture",
+        "ceiling": 20,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Validates endpoints and guards synchronized WASAPI packet capture.",
+        "expires": "2027-02-05"
+      },
+      {
+        "path": "src/audio/windows.rs",
+        "symbol": "capture::<anonymous>@198:308",
+        "ceiling": 32,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Validates endpoints and guards synchronized WASAPI packet capture.",
+        "expires": "2027-02-05"
+      },
+      {
+        "path": "src/transcription/mod.rs",
+        "symbol": "validate_request",
+        "ceiling": 18,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Validates bounded worker protocol, identity and payload invariants.",
+        "expires": "2027-02-05"
+      },
+      {
+        "path": "src/transcription/mod.rs",
+        "symbol": "read_request",
+        "ceiling": 13,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Distinguishes EOF, truncation and invalid worker input.",
+        "expires": "2027-02-05"
+      },
+      {
+        "path": "src/transcription/mod.rs",
+        "symbol": "validate_event",
+        "ceiling": 13,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Validates progress and ordered coverage intervals.",
+        "expires": "2027-02-05"
+      },
+      {
+        "path": "src/transcription/mod.rs",
+        "symbol": "WorkerProcess::run_request",
+        "ceiling": 35,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Correlates worker generations, progress, deadlines and shutdown.",
+        "expires": "2027-02-05"
+      },
+      {
+        "path": "src/transcription/mod.rs",
+        "symbol": "terminal_for",
+        "ceiling": 12,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Enforces command/event terminal-state compatibility.",
+        "expires": "2027-02-05"
+      },
+      {
+        "path": "src/transcription/worker.rs",
+        "symbol": "handle",
+        "ceiling": 23,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Dispatches validated model loading and inference outcomes.",
+        "expires": "2027-02-05"
+      },
+      {
+        "path": "src/transcription/worker.rs",
+        "symbol": "decode_audio_file",
+        "ceiling": 29,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Streams bounded WAV/MP3 decoding and normalization.",
+        "expires": "2027-02-05"
+      },
+      {
+        "path": "src/ui.rs",
+        "symbol": "Desktop::poll",
+        "ceiling": 53,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Reconciles device, capture and transcription lifecycles.",
+        "expires": "2027-02-05"
+      },
+      {
+        "path": "src/ui.rs",
+        "symbol": "Desktop::primary_action",
+        "ceiling": 13,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Dispatches state-dependent capture and file actions.",
+        "expires": "2027-02-05"
+      },
+      {
+        "path": "src/ui.rs",
+        "symbol": "Desktop::transcript_actions::<anonymous>@774:788",
+        "ceiling": 14,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Coordinates transcript copy, save, discard and cancellation.",
+        "expires": "2027-02-05"
+      },
+      {
+        "path": "src/ui.rs",
+        "symbol": "Desktop::workspace::<anonymous>@920:950::<anonymous>@921:946",
+        "ceiling": 11,
+        "owner": "rustcorder-maintainers",
+        "reason": "Existing adoption debt: Maps transcription state to the visible status label.",
+        "expires": "2027-02-05"
+      }
+    ]
+  },
+  "duplication": {
+    "max_percent": 2,
+    "min_lines": 5,
+    "min_tokens": 50,
+    "paths": [
+      "src"
+    ]
+  },
+  "dependencies": {
+    "advisories": [],
+    "npm_omit": [
+      "peer"
+    ],
+    "licenses": [
+      {
+        "id": "existing-decoder-and-font-licenses",
+        "owner": "rustcorder-maintainers",
+        "reason": "Exact current font, Symphonia and whisper-rs versions retain their declared licenses and package notices; see deny.toml."
+      }
+    ]
+  },
+  "mutation": {
+    "light": {
+      "min_percent": 40,
+      "timeout_minutes": 20
+    },
+    "full": {
+      "min_percent": 50,
+      "timeout_minutes": 60
+    }
+  },
+  "jobs": {
+    "ordinary": [
+      "policy",
+      "rust",
+      "mutation_rust",
+      "mutation_ci",
+      "report"
+    ],
+    "release": [
+      "package"
+    ]
+  },
+  "gate_owners": {
+    "prerequisites": "rust",
+    "format": "rust",
+    "lint": "rust",
+    "build": "rust",
+    "unit": "rust",
+    "integration": "rust",
+    "ui": "rust",
+    "coverage": "rust",
+    "complexity": "rust",
+    "deadcode": "rust",
+    "duplication": "rust",
+    "architecture": "rust",
+    "dependencies": "rust",
+    "mutation-rust": "mutation_rust",
+    "mutation-ci": "mutation_ci",
+    "package": "package",
+    "ci-support": "policy",
+    "workflow": "policy"
+  },
+  "budgets": {
+    "warm_minutes": 45,
+    "native_minutes": 35,
+    "policy_minutes": 10,
+    "package_minutes": 20
+  },
+  "exceptions": []
+}

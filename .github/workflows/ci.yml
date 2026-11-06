@@ -1,0 +1,288 @@
+name: CI
+on:
+  push:
+    branches:
+      - feature/**
+      - develop
+      - release
+      - main
+  pull_request:
+    branches:
+      - develop
+      - release
+      - main
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/feature/') }}
+jobs:
+  policy:
+    name: CI policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+          cache: npm
+          cache-dependency-path: scripts/ci/package-lock.json
+      - run: npm ci --prefix scripts/ci --omit=peer --ignore-scripts
+      - run: node scripts/ci/gates.mjs setup-linux
+      - name: Validate support code, workflows and promotion
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/gates.mjs policy-run --root .build/ci-evidence/policy --actionlint .build/ci-tools/actionlint
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: evidence-${{ github.run_id }}-${{ github.run_attempt }}-policy
+          path: .build/ci-evidence/policy
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+  rust:
+    name: Rust and quality
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+          cache: npm
+          cache-dependency-path: scripts/ci/package-lock.json
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          key: native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'scripts/ci/toolchain.json') }}-${{
+            github.sha }}
+          restore-keys: |
+            native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'scripts/ci/toolchain.json') }}-
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .build/ci-tools
+            target
+      - run: npm ci --prefix scripts/ci --omit=peer --ignore-scripts
+      - name: Provision pinned Windows tools
+        shell: pwsh
+        run: ./scripts/ci/setup-windows.ps1 -Install
+      - name: Run Rust quality gates
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/ci/ci.ps1 -Gate quality -EvidenceDirectory "$pwd/.build/ci-evidence/rust"
+      - name: Verify PowerShell boundaries
+        shell: pwsh
+        run: |-
+          ./scripts/ci/tests/dispatcher.test.ps1
+          ./scripts/ci/tests/setup-windows.test.ps1
+          ./scripts/ci/tests/ui-smoke.test.ps1
+
+          ./scripts/ci/tests/package.test.ps1
+          ./scripts/ci/tests/package-archive.test.ps1
+          ./scripts/ci/tests/publish.test.ps1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: evidence-${{ github.run_id }}-${{ github.run_attempt }}-rust
+          path: .build/ci-evidence/rust
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+  readiness:
+    name: CI readiness
+    if: always()
+    needs:
+      - policy
+      - rust
+      - mutation_rust
+      - mutation_ci
+      - package
+      - report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+      - run: npm ci --prefix scripts/ci --omit=peer --ignore-scripts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: quality-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/quality
+      - name: Require every applicable job, gate and report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci/gates.mjs readiness --root .build/quality/collected --report .build/quality/report/report.json
+          --out .build/certification/certification.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: certification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/certification
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+  mutation_rust:
+    name: Mutation Rust light
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+      - run: npm ci --prefix scripts/ci --omit=peer --ignore-scripts
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          key: native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'scripts/ci/toolchain.json') }}-${{
+            github.sha }}
+          restore-keys: |
+            native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'scripts/ci/toolchain.json') }}-
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .build/ci-tools
+            target
+      - name: Provision pinned Windows tools
+        shell: pwsh
+        run: ./scripts/ci/setup-windows.ps1 -Install
+      - name: Run mutation-rust
+        shell: pwsh
+        env: &a1
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/ci/ci.ps1 -Gate mutation-rust -Profile light -EvidenceDirectory "$pwd/.build/ci-evidence/mutation-rust"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: evidence-${{ github.run_id }}-${{ github.run_attempt }}-mutation_rust
+          path: .build/ci-evidence/mutation-rust
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+  mutation_ci:
+    name: Mutation CI light
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+      - run: npm ci --prefix scripts/ci --omit=peer --ignore-scripts
+      - env: *a1
+        run: node scripts/ci/gates.mjs context --out .build/ci-evidence/mutation_ci/context.json --job mutation_ci
+      - name: Run fresh CI-helper mutation
+        run: node scripts/ci/run-mutation.mjs ci --profile light --root .build/ci-evidence/mutation_ci/mutation-ci
+      - name: Normalize available mutation evidence
+        if: always()
+        run: node scripts/ci/gates.mjs record-mutation --root .build/ci-evidence/mutation_ci --gate mutation-ci
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: evidence-${{ github.run_id }}-${{ github.run_attempt }}-mutation_ci
+          path: .build/ci-evidence/mutation_ci
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+  package:
+    name: Package smoke
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+      - run: npm ci --prefix scripts/ci --omit=peer --ignore-scripts
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          key: native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'scripts/ci/toolchain.json') }}-${{
+            github.sha }}
+          restore-keys: |
+            native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'scripts/ci/toolchain.json') }}-
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .build/ci-tools
+            target
+      - name: Provision pinned Windows tools
+        shell: pwsh
+        run: ./scripts/ci/setup-windows.ps1 -Install
+      - name: Run package
+        shell: pwsh
+        env: *a1
+        run: ./scripts/ci/ci.ps1 -Gate package -Profile light -EvidenceDirectory "$pwd/.build/ci-evidence/package"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: evidence-${{ github.run_id }}-${{ github.run_attempt }}-package
+          path: .build/ci-evidence/package
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+    if: github.event_name == 'push' && github.ref == 'refs/heads/release'
+  report:
+    name: CI report
+    if: always()
+    needs:
+      - policy
+      - rust
+      - mutation_rust
+      - mutation_ci
+      - package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+      - run: npm ci --prefix scripts/ci --omit=peer --ignore-scripts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: evidence-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: .build/collected
+        continue-on-error: true
+      - name: Build available-evidence report
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci/gates.mjs report --root .build/collected --out .build/report
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: quality-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |-
+            .build/collected
+            .build/report
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

@@ -10,6 +10,14 @@ export function mutationBudget(profile) {
   return (profile === 'light' ? 20 : 60)*60*1000;
 }
 
+export function rustMutationEnvironment(env = process.env, root = repoRoot) {
+  if (env.GITHUB_ACTIONS !== 'true') return { ...env };
+  const temporary = path.win32.join(root, '.build', 't');
+  ensure(path.win32.isAbsolute(root) && temporary.length <= 35,
+    'Hosted Rust mutation needs a short checkout path (temporary prefix at most 35 characters)');
+  return { ...env, TEMP: temporary, TMP: temporary };
+}
+
 function owned(directory) {
   const full = path.resolve(directory), boundary = path.join(repoRoot,'.build')+path.sep;
   ensure(full.startsWith(boundary),'Mutation output escaped checkout .build');
@@ -67,7 +75,9 @@ export async function runMutation(engine,profile,output) {
     if (engine==='rust') {
       ensure(process.platform==='win32','Rust/native mutation requires Windows');
       const dev=['-NoProfile','-File',path.join(repoRoot,'scripts/dev.ps1')];
-      const run=(args,stem)=>child('powershell.exe',[...dev,...args],directory,stem,deadline);
+      const env=rustMutationEnvironment();
+      if (env.GITHUB_ACTIONS==='true') mkdirSync(owned(env.TEMP),{recursive:true});
+      const run=(args,stem)=>child('powershell.exe',[...dev,...args],directory,stem,deadline,env);
       const list=await run(['test','--locked','--offline','--lib','--','--list','--format','pretty'],'baseline-list');
       const tests=await run(['test','--locked','--offline','--lib','--','--format','pretty','--test-threads','1'],'baseline');
       ensure(list.completed&&list.exit_code===0&&tests.completed&&tests.exit_code===0,'Mutation baseline did not pass');

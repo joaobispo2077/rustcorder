@@ -5,6 +5,54 @@ import {
   validatePreparation, verifyApproval, verifyArtifactMetadata, verifyCandidate,
 } from '../release.mjs';
 import { mutationTestFiles } from '../stryker.config.mjs';
+import * as automatic from '../release.mjs';
+
+test('automatic adoption policy is explicit, disabled by default and rejects ambiguous versions', () => {
+  assert.equal(typeof automatic.validateReleasePolicy, 'function', 'Automatic adoption policy validation is missing');
+  const policy = { schema_version: 1, automation_enabled: false, initial_version: null };
+  assert.deepEqual(automatic.validateReleasePolicy(policy), policy);
+  for (const change of [{ schema_version: 2 }, { automation_enabled: 'true' }, { initial_version: 'v1.0.0' },
+    { initial_version: '1.0.0-rc.1' }, { initial_version: '1.0.0+build' }, { unexpected: true }]) {
+    assert.throws(() => automatic.validateReleasePolicy({ ...policy, ...change }));
+  }
+  assert.equal(automatic.validateReleasePolicy({ ...policy, automation_enabled: true, initial_version: '0.1.0' }).initial_version, '0.1.0');
+});
+
+test('automatic v2 records bind kind, canonical digest, source, policy and controller', () => {
+  assert.equal(typeof automatic.sealAutomaticRecord, 'function', 'Automatic release records are missing');
+  const body = { repository: 'joaobispo2077/rustcorder', source_sha: 'a'.repeat(40), version: '1.0.0',
+    release_policy_sha256: 'b'.repeat(64), control: { run_id: 10, run_attempt: 1, workflow_id: 11, source_sha: 'c'.repeat(40) } };
+  for (const kind of ['automatic-preparation', 'metadata-intent', 'automatic-candidate', 'automatic-publication-authority', 'automatic-publication-receipt']) {
+    const record = automatic.sealAutomaticRecord(kind, body);
+    assert.equal(record.schema_version, 2);
+    assert.equal(automatic.validateAutomaticRecord(record, kind), record);
+    for (const change of [{ schema_version: 1 }, { kind: 'confirmed-preparation' }, { source_sha: 'bad' },
+      { version: 'v1.0.0' }, { repository: 'foreign/repo' }, { release_policy_sha256: 'bad' }, { control: { ...body.control, run_attempt: 0 } }]) {
+      assert.throws(() => automatic.validateAutomaticRecord({ ...record, ...change }, kind));
+    }
+    for(const change of [{source_sha:'bad'},{repository:'foreign/repo'},{version:'v1.0.0'},{version:'1.0.0-rc.1'},{version:'1.0.0+build'},{release_policy_sha256:'bad'},
+      {control:{...body.control,run_id:0}},{control:{...body.control,run_attempt:0}},{control:{...body.control,workflow_id:0}},{control:{...body.control,source_sha:'bad'}}]){
+      assert.throws(()=>automatic.sealAutomaticRecord(kind,{...body,...change}),'A freshly sealed invalid record bypassed field validation');
+    }
+    assert.throws(() => automatic.validateAutomaticRecord({ schema_version: 1, ...body }, kind));
+  }
+});
+
+test('automatic authority binds every exact field and refuses manual identity or extra approval fields',()=>{
+  const control={run_id:404,run_attempt:1,workflow_id:405,source_sha:'c'.repeat(40)};
+  const policy={schema_version:1,automation_enabled:true,initial_version:null};
+  const candidate=automatic.sealAutomaticRecord('automatic-candidate',{repository:'joaobispo2077/rustcorder',source_sha:'a'.repeat(40),version:'0.2.0',
+    release_policy_sha256:canonicalDigest(policy),control,intent_sha256:'d'.repeat(64),preparation_sha256:'e'.repeat(64)});
+  const body={repository:candidate.repository,source_sha:candidate.source_sha,version:candidate.version,release_policy_sha256:candidate.release_policy_sha256,
+    control,candidate_sha256:candidate.candidate_sha256,intent_sha256:candidate.intent_sha256,preparation_sha256:candidate.preparation_sha256,actor:'automatic-ci'};
+  const seal=body=>automatic.sealAutomaticRecord('automatic-publication-authority',body);
+  assert.equal(automatic.validateAutomaticAuthority(candidate,seal(body),policy),true);
+  for(const change of [{source_sha:'b'.repeat(40)},{version:'0.2.1'},{candidate_sha256:'b'.repeat(64)},{intent_sha256:'b'.repeat(64)},
+    {preparation_sha256:'b'.repeat(64)},{release_policy_sha256:'b'.repeat(64)},{control:{...control,run_attempt:2}},{actor:'maintainer'},{environment_id:22}]){
+    assert.throws(()=>automatic.validateAutomaticAuthority(candidate,seal({...body,...change}),policy));
+  }
+  assert.throws(()=>automatic.validateAutomaticAuthority(candidate,seal(body),{...policy,automation_enabled:false}));
+});
 
 // Pure decision fixtures: no Git databases, child processes, archives or requests.
 const hash = (character, length = 40) => character.repeat(length);

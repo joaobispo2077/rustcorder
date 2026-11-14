@@ -124,7 +124,9 @@ $flowTransport = {
     throw ('Unexpected fixture request: '+$Request.method+' '+$Request.path)
 }
 try {
-    $flowResult = Invoke-CiPublish -Candidate $flowCandidate -Root $flowInput.attachments -Authorization $flowInput.authorization -Transport $flowTransport
+    $flowArguments=@{Candidate=$flowCandidate;Root=$flowInput.attachments;Authorization=$flowInput.authorization;Transport=$flowTransport}
+    if($flowInput.release_policy){$flowArguments.ReleasePolicy=$flowInput.release_policy}
+    $flowResult = Invoke-CiPublish @flowArguments
     Write-PublishReceipt $flowResult $flowInput.attachments | Out-Null
     Write-FlowJson $flowStatePath $flowState
     Write-FlowJson (Join-Path $flowRoot 'publish-result.json') @{result=$flowResult;state=$flowState}

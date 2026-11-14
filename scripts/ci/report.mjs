@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   cliOptions, collectEvidence, digest, ensure, jobNames, jsonFile, loadPolicy, object,
-  readiness, safeRelativePath, textValue, utcTime, validateContext, validatePolicy,
+  readiness, requiredGates, safeRelativePath, textValue, utcTime, validateContext, validatePolicy,
   validateReceipt, writeJson,
 } from './gates.mjs';
 
@@ -45,7 +45,7 @@ function missingGate(gate, reason) {
     exit_code: null, duration_ms: null, measurements: null, counts: null, raw_outputs: [], reason };
 }
 
-function measurementSummary(row, policy) {
+export function measurementSummary(row, policy) {
   const measurement = row.measurements;
   if (!measurement) return 'Not reported';
   if (row.gate === 'coverage') return ratioSummary(measurement.covered, measurement.total) +
@@ -166,11 +166,89 @@ export function writeReport({ root, context, jobs = {}, out = root, summaryPath 
   mkdirSync(out, { recursive: true });
   writeJson(path.join(out, 'report.json'), rendered.json);
   writeFileSync(path.join(out, 'report.md'), rendered.markdown, 'utf8');
+  writeJson(path.join(out, 'pr-quality-projection.json'), prProjection(rendered.json));
   if (summaryPath) {
     try { appendFileSync(summaryPath, rendered.markdown + '\n', 'utf8'); }
     catch (error) { console.error('Optional job-summary delivery failed: ' + error.message); }
   }
   return rendered;
+}
+
+export function boundedReportValue(value, depth=0) {
+  ensure(depth<=8,'Report value nesting exceeds bound');
+  if(value===null || typeof value==='boolean')return value;
+  if(typeof value==='number'){ensure(Number.isFinite(value) && Math.abs(value)<=Number.MAX_SAFE_INTEGER,'Invalid report number');return value;}
+  if(typeof value==='string')return value.slice(0,1024);
+  if(Array.isArray(value))return value.slice(0,32).map(item=>boundedReportValue(item,depth+1));
+  object(value,'bounded report value');ensure(Object.keys(value).length<=128,'Report field population exceeds bound');
+  return Object.fromEntries(Object.entries(value).slice(0,64).map(([key,item])=>[key.slice(0,128),boundedReportValue(item,depth+1)]));
+}
+
+export function prProjection(report) {
+  ensure(report.schema_version===1,'Invalid full report schema');validateContext(report.context);
+  const policy=loadPolicy(),known=new Set(Object.keys(policy.gate_owners));
+  ensure(Array.isArray(report.gates) && report.gates.length<=known.size,'Invalid projection gate population');
+  const seen=new Set();
+  const gates=report.gates.map(row=>{
+    ensure(known.has(row.gate) && !seen.has(row.gate),'Unknown or repeated projection gate');seen.add(row.gate);
+    ensure(['pass','fail','incomplete','excluded'].includes(row.status),'Invalid projection gate status');
+    return {gate:row.gate,status:row.status,required:row.required,applicable:row.applicable,
+      reason:row.reason?.slice(0,1024)??null,counts:boundedReportValue(row.counts??null),
+      measurements:boundedReportValue(row.measurements??null),summary:measurementSummary(row,report.policy).slice(0,2048)};
+  });
+  const projection={schema_version:1,kind:'pr-quality-projection',context:report.context,
+    preliminary:{ready:report.assessment.ready,reasons:report.assessment.reasons.slice(0,64).map(item=>String(item).slice(0,1024))},
+    construction_errors:boundedReportValue(report.collection_errors??[]),gates,full_artifact:'quality-'+report.context.run_id+'-'+report.context.run_attempt};
+  ensure(Buffer.byteLength(JSON.stringify(projection))<=1048576,'PR projection exceeds size bound');return projection;
+}
+
+export function parsePrProjection(bytes) {
+  ensure(Buffer.isBuffer(bytes) && bytes.length<=1048576,'PR projection exceeds size bound');
+  const value=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
+  ensure(value.schema_version===1 && value.kind==='pr-quality-projection','Invalid PR projection schema');validateContext(value.context);
+  ensure(value.full_artifact==='quality-'+value.context.run_id+'-'+value.context.run_attempt,'Wrong full quality artifact identity');
+  const known=new Set(Object.keys(loadPolicy().gate_owners)),seen=new Set();
+  ensure(Array.isArray(value.gates) && value.gates.length<=known.size,'Invalid projection gates');
+  const required=new Set(requiredGates(value.context));
+  for(const row of value.gates){
+    ensure(known.has(row.gate) && !seen.has(row.gate) && ['pass','fail','incomplete','excluded'].includes(row.status),'Invalid projection gate');seen.add(row.gate);
+    ensure(row.required===required.has(row.gate) && row.applicable===required.has(row.gate) &&
+      (required.has(row.gate)?row.status!=='excluded':row.status==='excluded' && typeof row.reason==='string' && row.reason.length>0),
+      'Invalid projection gate applicability/exclusion');
+  }
+  // Reject oversized/deep structures even when their Markdown would be truncated.
+  boundedReportValue(value);return value;
+}
+
+function prText(value) {
+  return markdownText(value).replace(/@/g,'&#64;').replace(/\(/g,'&#40;').replace(/\)/g,'&#41;').replace(/[\u0000-\u001f\u007f]/g,' ');
+}
+
+export function renderPrReport({projection=null,pr,phase,reasons=[],jobs={},run=null}) {
+  ensure(['passed','failed','incomplete','pending','superseded','historical'].includes(phase),'Invalid PR report phase');
+  const context=projection?.context;
+  const identity=run??{id:context.run_id,run_attempt:context.run_attempt,head_sha:context.source_sha};
+  const repository=loadPolicy().repository;
+  const url='https://github.com/'+repository+'/actions/runs/'+identity.id+'/attempts/'+identity.run_attempt;
+  const lines=['<!-- rustcorder-quality-report:v1 -->','# CI quality: '+phase,'',
+    'PR #'+pr.number+'; '+(pr.state==='open'?'head':'historical head')+': '+prText(pr.head.sha)+'.',
+    'Tested SHA: '+prText(context?.tested_sha??'Not reported')+'.',
+    'Run '+identity.id+', attempt '+identity.run_attempt+'. [Open CI evidence]('+url+').','',
+    'This report describes this exact CI attempt and grants no release authority.','',
+    '| Gate | Result | Measurement / threshold | Counts | Reason |','| --- | --- | --- | --- | --- |'];
+  for(const row of projection?.gates??[])lines.push('| '+[labels[row.gate]??row.gate,row.status,row.summary,
+    row.counts===null?'Not reported':JSON.stringify(row.counts),row.reason].map(prText).join(' | ')+' |');
+  if(!projection)lines.push('', 'Quality report unavailable; final readiness cannot be certified.');
+  lines.push('','Reasons: '+(reasons.length?reasons.map(prText).join('; '):'None.'),'',
+    'Actual jobs: '+Object.entries(jobs).map(([id,state])=>prText(id)+': '+prText(state)).join('; '),
+    '', 'Excluded gates retain their reasons. Missing values are unavailable; zero counts remain zero.',
+    'Complete measurements and exclusions are in the full quality artifact on the linked run.');
+  const result=lines.join('\n');
+  if(Buffer.byteLength(result)<=49152)return result;
+  const suffix='\n\nDetails truncated. Open the linked CI run for complete quality evidence.\n';
+  // String slicing keeps the output valid UTF-8 and leaves ample room for suffix bytes.
+  let shown=result.slice(0,45000);while(Buffer.byteLength(shown+suffix)>49152)shown=shown.slice(0,-512);
+  return shown+suffix;
 }
 
 export function main(argv = process.argv.slice(2), env = process.env) {

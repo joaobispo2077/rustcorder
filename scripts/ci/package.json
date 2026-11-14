@@ -7,14 +7,15 @@
   },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check gates.mjs && node --check release.mjs && node --check report.mjs",
+    "check": "node --check gates.mjs && node --check release.mjs && node --check release-automation.mjs && node --check report.mjs && node --check pr-comment.mjs && node --check run-mutation.mjs && node --check mutation.mjs && node --check stryker.config.mjs",
     "mutation": "stryker run stryker.config.mjs"
   },
   "devDependencies": {
     "@ast-grep/cli": "0.51.1",
     "@semantic-release/commit-analyzer": "13.0.1",
-    "@semantic-release/release-notes-generator": "14.1.0",
+    "@semantic-release/release-notes-generator": "14.1.1",
     "@stryker-mutator/core": "10.1.1",
+    "conventional-changelog-angular": "8.3.1",
     "conventional-changelog-conventionalcommits": "9.1.0",
     "jscpd": "5.4.2",
     "semver": "7.7.3",

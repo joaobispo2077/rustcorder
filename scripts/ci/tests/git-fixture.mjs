@@ -3,6 +3,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
+// Injected routes never delegate to the network, including unexpected requests.
+export function apiFixture(routes = {}) {
+  const calls = [];
+  const api = async (endpoint, options = {}) => {
+    const call = { method: options.method ?? 'GET', endpoint, body: structuredClone(options.body ?? null) };
+    calls.push(call);
+    const key = call.method + ' ' + endpoint;
+    if (!Object.hasOwn(routes, key)) throw new Error('Network forbidden; missing fixture route: ' + key);
+    const route = routes[key];
+    return structuredClone(typeof route === 'function' ? await route(call, calls) : route);
+  };
+  return { api, calls, routes };
+}
+
 // Bare object database: fixtures never create/check out a branch or touch real refs.
 export function gitFixture(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rustcorder-ci-test-'));

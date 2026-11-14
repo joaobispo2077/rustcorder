@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { analyzeCommits } from '@semantic-release/commit-analyzer';
 const target = new URL('../release.mjs', import.meta.url);
 const release = existsSync(target) ? await import(target.href) : {};
@@ -9,6 +9,13 @@ const officialDefault = messages => analyzeCommits({ preset: 'conventionalcommit
   logger: { log() {} },
 });
 const impact = release.semanticImpact ?? officialDefault;
+const corpus = JSON.parse(readFileSync(new URL('fixtures/semantic-release.json', import.meta.url), 'utf8'));
+for (const fixture of corpus.cases) test('configured parity corpus: ' + fixture.name, async () => {
+  assert.equal(await impact([fixture.message]), fixture.impact);
+});
+for (const keyword of ['BREAKING CHANGE', 'BREAKING CHANGES', 'BREAKING', 'BREAKING-CHANGE']) test('breaking footer wins on ignored types: ' + keyword, async () => {
+  assert.equal(await impact(['docs: platform migration\n\n' + keyword + ': replace required platform']), 'major');
+});
 for (const [message, expected] of [
   ['fix: retain recording on interruption', 'patch'],
   ['feat(ui): expose cancellation', 'minor'],

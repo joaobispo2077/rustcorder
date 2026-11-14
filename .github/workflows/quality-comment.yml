@@ -1,0 +1,78 @@
+name: PR quality comment
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [requested, in_progress, completed]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  resolve:
+    name: Resolve verified PR associations
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      prs: ${{ steps.resolve.outputs.prs }}
+      has_prs: ${{ steps.resolve.outputs.has_prs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+      - run: npm ci --prefix scripts/ci --omit=peer --ignore-scripts
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/pr-comment.mjs resolve --out .build/pr-resolution
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: pr-resolution-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/pr-resolution
+          if-no-files-found: warn
+          retention-days: 14
+  comment:
+    name: Reconcile current PR quality report
+    needs: resolve
+    if: needs.resolve.outputs.has_prs == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.resolve.outputs.prs) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    concurrency:
+      group: quality-comment-${{ github.repository }}-${{ matrix.pr }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.2
+      - run: npm ci --prefix scripts/ci --omit=peer --ignore-scripts
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ matrix.pr }}
+        run: node scripts/ci/pr-comment.mjs deliver --out .build/pr-delivery
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: pr-delivery-${{ matrix.pr }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/pr-delivery
+          if-no-files-found: warn
+          retention-days: 14

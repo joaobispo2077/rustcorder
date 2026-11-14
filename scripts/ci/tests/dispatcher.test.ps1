@@ -1,5 +1,9 @@
 $ErrorActionPreference = 'Stop'
 $taskScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'ci.ps1'
+$taskSupportPackage=Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'package.json') -Raw | ConvertFrom-Json
+foreach($taskSupportModule in @('release-automation.mjs','pr-comment.mjs')){
+    if(-not $taskSupportPackage.scripts.check.Contains(('node --check '+$taskSupportModule))){throw ('Syntax checks omit '+$taskSupportModule)}
+}
 if (-not (Test-Path -LiteralPath $taskScript)) { throw 'CI command runner contract is absent.' }
 . $taskScript
 function Assert-True([bool]$Condition, [string]$Message) {

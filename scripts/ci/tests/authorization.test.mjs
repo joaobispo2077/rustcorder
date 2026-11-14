@@ -6,6 +6,32 @@ import path from 'node:path';
 import {repoRoot,digest} from '../gates.mjs';
 
 const request = { candidate_sha256: 'a'.repeat(64), control: {run_id: 404, run_attempt: 1} };
+
+test('automatic authorization is a distinct exact-candidate policy and intent binding', () => {
+  assert.equal(typeof release.validateAutomaticAuthority, 'function', 'Automatic publication authority validation is missing');
+  const control = { run_id: 404, run_attempt: 1, workflow_id: 405, source_sha: 'c'.repeat(40) };
+  const policy = { schema_version: 1, automation_enabled: true, initial_version: null };
+  const candidate = release.sealAutomaticRecord('automatic-candidate', { repository: 'joaobispo2077/rustcorder',
+    source_sha: 'a'.repeat(40), version: '0.2.0', release_policy_sha256: release.canonicalDigest(policy), control,
+    intent_sha256: 'd'.repeat(64), preparation_sha256: 'e'.repeat(64) });
+  const authority = release.sealAutomaticRecord('automatic-publication-authority', { repository: candidate.repository,
+    source_sha: candidate.source_sha, version: candidate.version, release_policy_sha256: candidate.release_policy_sha256,
+    control, candidate_sha256: candidate.candidate_sha256, intent_sha256: candidate.intent_sha256, preparation_sha256: candidate.preparation_sha256,actor:'automatic-ci' });
+  assert.equal(release.validateAutomaticAuthority(candidate, authority, policy), true);
+  for (const change of [{ candidate_sha256: 'b'.repeat(64) }, { source_sha: 'b'.repeat(40) },
+    { intent_sha256: 'b'.repeat(64) }, { control: { ...control, run_attempt: 2 } }]) {
+    const { authority_sha256, ...body } = authority;
+    assert.throws(() => release.validateAutomaticAuthority(candidate, release.sealAutomaticRecord(authority.kind, { ...body, ...change }), policy));
+  }
+  assert.throws(() => release.validateAutomaticAuthority(candidate, authority, { ...policy, automation_enabled: false }));
+  assert.throws(() => release.validateAutomaticAuthority(candidate, { ...authority, schema_version: 1, environment_id: 22 }, policy));
+});
+
+test('sealed automatic records freeze nested source identities against caller mutation',()=>{
+  const control={run_id:404,run_attempt:1,workflow_id:405,source_sha:'c'.repeat(40)};
+  const record=release.sealAutomaticRecord('metadata-intent',{repository:'joaobispo2077/rustcorder',source_sha:'a'.repeat(40),version:'0.2.0',release_policy_sha256:'d'.repeat(64),control});
+  control.run_attempt=2;assert.equal(record.control.run_attempt,1);assert.equal(release.validateAutomaticRecord(record,'metadata-intent'),record);
+});
 const env = {id: 22, name: 'release-publish', protection_rules: [{type:'required_reviewers', reviewers:[{type:'User',reviewer:{id:7,login:'owner'}}]}]};
 function review(comment = 'Approve ' + request.candidate_sha256 + ' run 404 attempt 1') {
   return [{state:'approved',comment,environments:[{id:22,name:'release-publish'}],user:{id:7,login:'owner'}}];

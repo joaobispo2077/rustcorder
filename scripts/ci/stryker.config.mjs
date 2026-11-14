@@ -9,13 +9,20 @@ export const mutationRepoRoot = path.resolve(fileURLToPath(new URL('../..', impo
 const ciRoot = fileURLToPath(new URL('./', import.meta.url));
 export const criticalFunctions = Object.freeze({
   'gates.mjs': Object.freeze(['validateContext', 'validateReceipt', 'promotion', 'commitPolicy', 'requiredGates', 'readiness']),
-  'release.mjs': Object.freeze(['verifyArtifactMetadata', 'verifyApproval', 'confirmPreparation', 'verifyCandidate']),
+  'release.mjs': Object.freeze(['verifyArtifactMetadata', 'validateReleasePolicy', 'validateAutomaticRecord', 'validateAutomaticAuthority', 'metadataWriter', 'verifyCandidate']),
+  'release-automation.mjs': Object.freeze(['validatePreparedPayload']),
+  'pr-comment.mjs': Object.freeze(['assessPrEvidence', 'newerRun', 'ownedComments']),
   'report.mjs': Object.freeze(['missingGate', 'measurementSummary', 'ratioSummary', 'renderReport']),
   'mutation.mjs': Object.freeze(['normalizeRustMutation', 'normalizeCiMutation', 'assessment', 'executionInfo', 'verifyScope']),
 });
 // Policy CI discovers every helper suite once. Per-mutant runs use pure decision
 // tests so Git preparation and native archive extraction do not repeat 670 times.
-const lightTests = Object.freeze(['contracts', 'context', 'promotion', 'workflows', 'release-decisions']);
+const lightTests = Object.freeze(['contracts', 'context', 'promotion', 'workflows', 'release-decisions', 'release-automation', 'pr-decisions']);
+
+export function mutationSourceFiles(profile='light') {
+  assertProfile(profile);
+  return ['gates.mjs','release.mjs','release-automation.mjs','pr-comment.mjs',...(profile==='full'?['report.mjs','mutation.mjs']:[])];
+}
 
 function assertProfile(profile) {
   if (profile !== 'light' && profile !== 'full') throw new Error('Unknown mutation profile');
@@ -37,7 +44,7 @@ function shellQuote(value) {
 export function mutationCommand(profile = 'light') {
   // Per-mutant TAP repeats the entire successful suite inside every failure report.
   // The separate baseline retains TAP counts; compact mutant diagnostics preserve exits.
-  return [shellQuote(process.execPath), '--test', '--test-reporter=dot', ...mutationTestFiles(profile)].join(' ');
+  return [shellQuote(process.execPath), '--test', '--test-reporter=dot', '--test-isolation=none', ...mutationTestFiles(profile)].join(' ');
 }
 
 export function namedMutationRanges(source, filename, names) {
@@ -68,7 +75,7 @@ export function createStrykerConfig(profile = 'light', { evidenceDirectory = pat
   assertProfile(profile);
   if (typeof dryRunOnly !== 'boolean') throw new Error('dryRunOnly must be a boolean');
   const evidence = ownedOutput(evidenceDirectory);
-  const sources = ['gates.mjs', 'release.mjs', ...(profile === 'full' ? ['report.mjs', 'mutation.mjs'] : [])];
+  const sources = mutationSourceFiles(profile);
   const mutate = sources.flatMap(name => namedMutationRanges(readFileSync(path.join(ciRoot, name), 'utf8'), 'scripts/ci/' + name, criticalFunctions[name]));
   for (const test of mutationTestFiles(profile)) if (!existsSync(path.join(mutationRepoRoot, test))) throw new Error('Missing declared mutation test: ' + test);
   const modules = path.join(ciRoot, 'node_modules');
@@ -82,7 +89,7 @@ export function createStrykerConfig(profile = 'light', { evidenceDirectory = pat
     incremental: false, inPlace: false, symlinkNodeModules: false,
     // buildCommand uses execaCommand token parsing, not the command runner shell.
     buildCommand: process.execPath.replaceAll(' ', '\\ ') + ' -e ' + link,
-    ignorePatterns: ['/.build', '/dist', '/target', '/reports', '/.agents', '/.claude', '/.codex', '/.specify', '/specs'],
+    ignorePatterns: ['/.build', '/dist', '/target', '/reports', '/models', '/workers', '/assets/quality', '/.agents', '/.claude', '/.codex', '/.specify', '/specs'],
     reporters: ['json', 'event-recorder'],
     jsonReporter: { fileName: path.join(evidence, 'stryker-report.json') },
     eventReporter: { baseDir: path.join(evidence, 'stryker-events') },

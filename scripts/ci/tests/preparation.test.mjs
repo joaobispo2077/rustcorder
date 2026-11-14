@@ -9,6 +9,19 @@ import { gitFixture } from './git-fixture.mjs';
 const manifest = '[package]\nname = "rustcorder"\nversion = "0.1.0" # keep comment\nedition = "2024"\npublish = false\n\n[dependencies]\nserde = "1.0"\n';
 const lock = 'version = 4\n\n[[package]]\nname = "rustcorder"\nversion = "0.1.0"\ndependencies = ["serde"]\n\n[[package]]\nname = "serde"\nversion = "1.0.229"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "fixture"\n';
 
+test('Angular linked headings insert and extract without changing published history', () => {
+  const old = '# Changelog\r\n\r\n## 0.1.0 - 2026-11-01\r\n\r\nPublished bytes.\r\n';
+  const notes = '# [0.2.0](https://github.com/fixture/repo/compare/v0.1.0...v0.2.0) (2026-11-14)\n\n### Features\n\n* New behavior\n';
+  const output = release.preparedChangelog(old, '0.2.0', '2026-11-14', notes);
+  assert.ok(output.endsWith(old.slice(old.indexOf('## 0.1.0'))));
+  assert.ok(output.includes('# [0.2.0]'));
+  assert.equal(release.releaseEntry(output, '0.2.0').replaceAll('\r\n', '\n'), notes.trim());
+  assert.equal(release.releaseEntry(output, '0.1.0'), 'Published bytes.');
+  assert.throws(() => release.preparedChangelog(output, '0.2.0', '2026-11-14', notes), /already|duplicate/i);
+  assert.throws(() => release.preparedChangelog(old, '0.2.0', '2026-11-15', notes), /date|identity/i);
+  assert.throws(() => release.releaseEntry(output + '\r\n' + notes, '0.2.0'), /ambiguous|duplicate/i);
+});
+
 for (const eol of ['\n', '\r\n']) test('version editing preserves every other byte with ' + JSON.stringify(eol), () => {
   const originalManifest = manifest.replaceAll('\n', eol), originalLock = lock.replaceAll('\n', eol);
   const result = release.editVersionFiles(Buffer.from(originalManifest), Buffer.from(originalLock), '0.2.0');
@@ -66,7 +79,7 @@ async function preparationInput(t) {
   const source = repo.commit('feat: validated export', [first.sha]);
   const context = JSON.parse(readFileSync(new URL('fixtures/context.json', import.meta.url), 'utf8'));
   Object.assign(context, { source_sha: source.sha, tested_sha: source.sha });
-  const proposal = await release.createProposal({ cwd: repo.root, source_sha: source.sha, context,
+  const proposal = await release.createProposal({ cwd: repo.root, source_sha: source.sha, context, date: '2026-11-05',
     published: [{ tag_name: 'v0.1.0', tag_object: repo.tag('v0.1.0', first), target_sha: first.sha, published: true }] });
   const args = { cwd: repo.root, proposal, reviewed_sha256: proposal.proposal_sha256,
     confirmation: { completion: true }, date: '2026-11-05',
@@ -96,6 +109,27 @@ test('isolated preparation emits exact tree/patch while source/workspace/refs re
   assert.equal(result.manifest.patch_sha256, (await import('../gates.mjs')).digest(result.patch));
 });
 
+test('automatic preparation binds source authority, exact four-path tree and continuation instructions', async t => {
+  const { args, repo, source } = await preparationInput(t);
+  const context = args.proposal.context;
+  const policy = { schema_version: 1, automation_enabled: true, initial_version: null };
+  const automatic_authority = { policy, source_sha: source.sha, source_ci: context, complete: true,
+    pr: { number: 7, merged: true, merge_commit_sha: source.sha, base: { ref: 'release', repo: { id: context.repository_id } },
+      head: { ref: 'develop', repo: { id: context.repository_id } } }, commit_date: '2026-11-05T12:00:00Z',
+    quality_snapshot: '# Quality metrics\n\nSynthetic preparation baseline.\n',
+    artifacts: Object.fromEntries(['quality', 'certification', 'package'].map((kind, index) => [kind, { id: 500 + index, api_digest: 'sha256:' + 'a'.repeat(64) }])) };
+  const result = await release.prepareProposal({ ...args, confirmation: undefined, automatic_authority });
+  assert.equal(result.manifest.schema_version, 2);
+  assert.equal(result.manifest.kind, 'automatic-preparation');
+  assert.equal(result.manifest.confirmation, undefined);
+  assert.deepEqual([...result.manifest.permitted_paths].sort(), ['Cargo.toml', 'Cargo.lock', 'CHANGELOG.md', 'docs/quality-metrics.md'].sort());
+  assert.equal(release.validateAutomaticPreparation(result.manifest), result.manifest);
+  const payload = JSON.parse(readFileSync(path.join(result.output, 'prepared-files.json')));
+  assert.equal(Buffer.from(payload['docs/quality-metrics.md'].content, 'base64').toString(), automatic_authority.quality_snapshot);
+  assert.ok(!readFileSync(path.join(result.output, 'apply-instructions.md'), 'utf8').includes('push it yourself'));
+  assert.equal(repo.git(['for-each-ref']), '');
+});
+
 test('changed reviewed digest and metadata graph cannot produce a preparation', async t => {
   const { args } = await preparationInput(t);
   await assert.rejects(() => release.prepareProposal({ ...args, reviewed_sha256: '0'.repeat(64) }), /digest/i);
@@ -117,4 +151,29 @@ test('exact final candidate requires the prepared tree and one source parent', a
     { tree_sha: 'e'.repeat(40) }, { parents: [] }, { parents: [source.sha, source.sha] },
     { parents: ['e'.repeat(40)] }, { version: '9.9.9' },
   ]) assert.throws(() => release.verifyCandidate(manifest, { ...candidate, ...change }));
+});
+
+test('only the exact authenticated unpublished entry is replaced; published bytes remain intact',()=>{
+  assert.equal(typeof release.reconcileUnpublishedChangelog,'function');
+  const old='## 0.1.0 - 2026-11-01\n\nPublished history.\n';
+  const notes='# [0.2.0](https://github.com/example/repo/compare/v0.1.0...v0.2.0) (2026-11-14)\n\n### Features\n\n* Existing feature\n';
+  const text='# Changelog\n\n'+notes+'\n'+old;
+  const row={source_sha:'a'.repeat(40),version:'0.2.0',date:'2026-11-14',notes};
+  const result=release.reconcileUnpublishedChangelog(text,[row]);
+  assert.ok(result.endsWith(old));assert.ok(!result.includes('Existing feature'));
+  assert.throws(()=>release.reconcileUnpublishedChangelog(text.replace('Existing feature','Edited by a real PR'),[row]),/changed|conflict/i);
+  assert.throws(()=>release.reconcileUnpublishedChangelog(text,[{...row,version:'0.1.0'}]),/changed|conflict/i);
+});
+
+test('authenticated metadata with breaking notes is excluded while every real unpublished commit remains',async t=>{
+  const {repo,args,source}=await preparationInput(t);
+  const generated=repo.commit('chore(release): 0.2.0\n\nBREAKING CHANGE: copied release notes',[source.sha]);
+  const newer=repo.commit('fix: new real correction',[generated.sha]);
+  const context={...args.proposal.context,source_sha:newer.sha,tested_sha:newer.sha};
+  const raw=await release.createProposal({cwd:repo.root,source_sha:newer.sha,context,published:[args.proposal.previous],automatic:true,date:'2026-11-14'});
+  assert.equal(raw.version,'1.0.0');
+  const row={source_sha:generated.sha,version:'0.2.0',date:'2026-11-14',notes:'Synthetic authenticated notes',preparation_sha256:'1'.repeat(64),intent_sha256:'2'.repeat(64)};
+  const corrected=await release.createProposal({cwd:repo.root,source_sha:newer.sha,context,published:[args.proposal.previous],automatic:true,date:'2026-11-14',authenticated_metadata:[row]});
+  assert.equal(corrected.version,'0.2.0');assert.deepEqual(corrected.commits.map(item=>item.sha),[source.sha,newer.sha]);
+  assert.ok(corrected.notes.includes('new real correction'));
 });

@@ -1,5 +1,8 @@
 # How CI and releases will work
 
+The release authorization/entry format described here is historical. Feature 004
+supersedes it with the [automatic flow](versioning.md) and [current evidence](automated-semantic-release-validation.md).
+
 The plan keeps Rustcorder as one native Rust application. GitHub Actions will
 validate changes, calculate versions and prepare release evidence. New Node
 tools are confined to CI; the installed application gains no Node/Python runtime

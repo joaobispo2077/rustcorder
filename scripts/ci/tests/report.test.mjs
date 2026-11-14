@@ -5,11 +5,32 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { main, renderReport, writeReport } from '../report.mjs';
+import * as reporting from '../report.mjs';
 import { digest, loadPolicy, repoRoot, requiredGates, writeJson } from '../gates.mjs';
 
 const baseContext = JSON.parse(readFileSync(new URL('fixtures/context.json', import.meta.url), 'utf8'));
 const policy = loadPolicy();
 const now = '2026-11-05T12:00:01.000Z';
+
+test('compact PR projection preserves raw zero counts, exclusions and safe bounded rendering', () => {
+  assert.equal(typeof reporting.prProjection,'function');
+  assert.equal(typeof reporting.renderPrReport,'function');
+  const full=renderReport(input({receipts:[receipt('unit',{counts:{passed:5,failed:0,ignored:0},reason:'<script>@everyone [click](javascript:evil)</script>'})]})).json;
+  const projection=reporting.prProjection(full);
+  assert.equal(projection.kind,'pr-quality-projection');
+  assert.equal(projection.gates.find(row=>row.gate==='unit').counts.failed,0);
+  assert.equal(projection.gates.find(row=>row.gate==='integration').counts,null);
+  assert.equal(projection.gates.find(row=>row.gate==='package').status,'excluded');
+  const markdown=reporting.renderPrReport({projection,pr:{number:7,state:'open',head:{sha:full.context.source_sha}},phase:'incomplete',reasons:['No final readiness'],jobs:{}});
+  assert.ok(Buffer.byteLength(markdown)<=49152);
+  assert.ok(!markdown.includes('<script>') && !markdown.includes('@everyone') && !markdown.includes('](javascript:'));
+  assert.match(markdown,/incomplete/i);assert.match(markdown,/failed.*0/);
+  assert.match(markdown,/https:\/\/github.com\/joaobispo2077\/rustcorder\/actions\/runs\/303/);
+  assert.throws(()=>reporting.parsePrProjection(Buffer.alloc(1048577)),/bound|large/i);
+  const forged=structuredClone(projection);forged.gates.find(row=>row.gate==='package').status='pass';
+  assert.throws(()=>reporting.parsePrProjection(Buffer.from(JSON.stringify(forged))),/applicability|exclusion/i);
+  assert.throws(()=>reporting.prProjection({...full,gates:[...full.gates,{gate:'untrusted',status:'pass'}]}),/gate/i);
+});
 function context() { return { ...baseContext, branch: 'feature/ci', job_id: 'report' }; }
 function receipt(gate = 'format', changes = {}) {
   return {

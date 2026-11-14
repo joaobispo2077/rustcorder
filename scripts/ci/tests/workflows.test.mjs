@@ -4,6 +4,27 @@ import * as gates from '../gates.mjs';
 import { readFileSync } from 'node:fs';
 const policy = JSON.parse(readFileSync(new URL('../policy.json', import.meta.url), 'utf8'));
 const context = JSON.parse(readFileSync(new URL('fixtures/context.json', import.meta.url), 'utf8'));
+
+function controlWorkflow(role) {
+  const checkout = { uses: 'actions/checkout@' + 'a'.repeat(40), with: { ref: '${{ github.workflow_sha }}', 'persist-credentials': false } };
+  const job = permissions => ({ permissions, steps: [structuredClone(checkout), { run: 'node scripts/ci/' + (role === 'pr-report' ? 'pr-comment' : 'release-automation') + '.mjs' }] });
+  return { on: { workflow_run: { workflows: ['CI'], types: ['completed'] } }, permissions: { contents: 'read', actions: 'read' }, jobs: role === 'pr-report' ?
+    { resolve: job({ contents: 'read', actions: 'read' }), comment: job({ contents: 'read', actions: 'read', 'pull-requests': 'write' }) } :
+    { prepare: job({ contents: 'read', actions: 'read' }), metadata: job({ contents: 'read', actions: 'read' }), publish: job({ contents: 'write', actions: 'read' }) } };
+}
+
+for (const role of ['release-automation', 'pr-report']) test('trusted role permissions remain isolated: ' + role, () => {
+  const workflow = controlWorkflow(role);
+  assert.equal(gates.workflowPolicy(workflow, role), true);
+  for (const change of [
+    value => { value.permissions.contents = 'write'; },
+    value => { value.on.pull_request_target = {}; },
+    value => { Object.values(value.jobs)[0].permissions.contents = 'write'; },
+    value => { Object.values(value.jobs).at(-1).steps[0].with.ref = '${{ github.event.workflow_run.head_sha }}'; },
+    value => { Object.values(value.jobs).at(-1).steps.push({ uses: 'actions/cache@' + 'b'.repeat(40) }); },
+    value => { Object.values(value.jobs).at(-1).steps.push({ run: 'node candidate/evil.mjs' }); },
+  ]) { const mutated = structuredClone(workflow); change(mutated); assert.throws(() => gates.workflowPolicy(mutated, role)); }
+});
 test('readiness requires all applicable jobs even without receipts', () => {
   const result = gates.readiness(context, [], { policy: 'success', rust: 'success', mutation_rust: 'success', mutation_ci: 'success', report: 'success' }, true, policy);
   assert.equal(result.ready, false);

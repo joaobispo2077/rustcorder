@@ -21,7 +21,8 @@ test('CI tools are private, exact and separate from product versioning', () => {
     assert.match(version, /^\d+\.\d+\.\d+$/, `${name} must have an exact pin`);
   }
   assert.equal(pkg.devDependencies['@semantic-release/commit-analyzer'], '13.0.1');
-  assert.equal(pkg.devDependencies['@semantic-release/release-notes-generator'], '14.1.0');
+  assert.equal(pkg.devDependencies['@semantic-release/release-notes-generator'], '14.1.1');
+  assert.equal(pkg.devDependencies['conventional-changelog-angular'], '8.3.1');
   assert.equal(pkg.devDependencies['semantic-release'], undefined);
   assert.equal(pkg.overrides['semantic-release'], '25.0.8');
 });

@@ -97,12 +97,12 @@ export async function runMutation(engine,profile,output) {
       measurement=normalizeRustMutation({mutants,outcomes,execution:{profile,scope,baseline,...result,
         fresh:true,cached:false,started_at,completed_at:new Date().toISOString()}});
     } else {
-      const {mutationTestFiles}=await import('./stryker.config.mjs');
+      const {mutationTestFiles,mutationSourceFiles}=await import('./stryker.config.mjs');
       const tests=await child(process.execPath,['--test','--test-reporter=tap',...mutationTestFiles(profile)],directory,'baseline',deadline);
       ensure(tests.completed&&tests.exit_code===0,'CI helper mutation baseline did not pass');
       baseline={completed:true,...nodePopulation(tests.stdout)};
       baseline={completed:true,passed:baseline.passed,failed:baseline.failed,ignored:0};
-      scope=['scripts/ci/gates.mjs','scripts/ci/release.mjs',...(profile==='full'?['scripts/ci/mutation.mjs','scripts/ci/report.mjs']:[])].sort();
+      scope=mutationSourceFiles(profile).map(name=>'scripts/ci/'+name).sort();
       result=await child(process.execPath,[path.join(ciRoot,'run-mutation.mjs'),'stryker-worker','--profile',profile,'--root',directory],directory,'engine',deadline);
       const report=JSON.parse(readFileSync(path.join(directory,'stryker-report.json'),'utf8'));
       const events=filesBelow(path.join(directory,'stryker-events'));

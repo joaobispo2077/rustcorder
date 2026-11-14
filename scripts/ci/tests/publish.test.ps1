@@ -11,6 +11,9 @@ function Assert-PublishRejects([scriptblock]$Action, [string]$Message) {
     Assert-PublishTest $taskRejected $Message
 }
 function Copy-PublishValue($Value) { return $Value | ConvertTo-Json -Depth 20 | ConvertFrom-Json -AsHashtable -NoEnumerate }
+$taskUnicodeGolden=@{notes=('café 🔊'+"`nnext"+[char]0x85+'line'+[char]0x2028+'separator'+[char]0x2029+'end');
+    a=@($null,$true,$false,0,[long]9007199254740991);nested=@{Z='</script> @value \ "';a=([string][char]8+[char]12+[char]13+[char]9+[char]11)}}
+Assert-PublishTest ((Get-PublishCanonicalDigest $taskUnicodeGolden) -ceq '4b62347977eccbc6abcb0576bd8e956a9442600334b7f3f9025c4018eaed4680') 'Node/PowerShell Unicode canonical digests differ.'
 function New-PublishFixture {
     $taskFixtureRoot = Join-Path $taskSetupRoot ('.build/publish-test-' + [Guid]::NewGuid().ToString('N'))
     [IO.Directory]::CreateDirectory($taskFixtureRoot) | Out-Null
@@ -366,5 +369,69 @@ try {
     Assert-PublishRejects {Invoke-PublishFixture $taskFixture} 'A CI rerun after tag-object creation still created its public reference.'
     Assert-PublishTest ($null -eq $taskFixture.state.ref -and $null -eq $taskFixture.state.release) 'Stale source CI approval created a tag reference or draft.'
 } finally {Remove-PublishFixture $taskFixture}
+
+$taskAutomaticFixture=New-PublishFixture
+try {
+    Assert-PublishTest ($null -ne (Get-Command Get-PublishCanonicalDigest -ErrorAction SilentlyContinue)) 'Automatic canonical authority verification is missing.'
+    $taskAutomaticPolicy=@{schema_version=1;automation_enabled=$true;initial_version=$null}
+    $taskAutomaticFixture.candidate.schema_version=2
+    $taskAutomaticFixture.candidate.kind='automatic-candidate'
+    $taskAutomaticFixture.candidate.release_policy_sha256=Get-PublishCanonicalDigest $taskAutomaticPolicy
+    $taskAutomaticFixture.candidate.intent_sha256=('1'*64)
+    $taskAutomaticFixture.candidate.preparation_sha256=('2'*64)
+    $taskIdentity=Copy-PublishValue $taskAutomaticFixture.candidate
+    foreach($taskKey in @('candidate_sha256','release_sha256','control')){$taskIdentity.Remove($taskKey)}
+    $taskAutomaticFixture.candidate.release_sha256=Get-PublishCanonicalDigest $taskIdentity
+    $taskIdentity=Copy-PublishValue $taskAutomaticFixture.candidate;$taskIdentity.Remove('candidate_sha256')
+    $taskAutomaticFixture.candidate.candidate_sha256=Get-PublishCanonicalDigest $taskIdentity
+    $taskAuthority=@{schema_version=2;kind='automatic-publication-authority';repository=$taskAutomaticFixture.candidate.repository;
+        source_sha=$taskAutomaticFixture.candidate.source_sha;version=$taskAutomaticFixture.candidate.version;
+        release_policy_sha256=$taskAutomaticFixture.candidate.release_policy_sha256;intent_sha256=('1'*64);preparation_sha256=('2'*64);
+        candidate_sha256=$taskAutomaticFixture.candidate.candidate_sha256;control=(Copy-PublishValue $taskAutomaticFixture.candidate.control);actor='automatic-ci'}
+    $taskAuthority.authority_sha256=Get-PublishCanonicalDigest $taskAuthority
+    $taskAutomaticFixture.authorization=$taskAuthority
+    foreach($taskManualIdentity in @('actor','environment_id')){
+        $taskMixedAuthority=Copy-PublishValue $taskAuthority
+        if($taskManualIdentity -ceq 'actor'){$taskMixedAuthority.actor='maintainer'}else{$taskMixedAuthority.environment_id=22}
+        $taskMixedAuthority.authority_sha256=Get-PublishRecordDigest $taskMixedAuthority @('authority_sha256')
+        Assert-PublishRejects {Assert-PublishBinding $taskAutomaticFixture.candidate $taskMixedAuthority $taskAutomaticFixture.root $taskAutomaticPolicy} 'Manual authority fields entered the automatic path.'
+    }
+    $taskAutoEnvironment=@{GITHUB_ACTIONS='true';GITHUB_REPOSITORY='joaobispo2077/rustcorder';GITHUB_REPOSITORY_ID='101';GITHUB_REF='refs/heads/main';
+        GITHUB_WORKFLOW_REF='joaobispo2077/rustcorder/.github/workflows/release.yml@refs/heads/main';GITHUB_WORKFLOW_SHA=('c'*40);GITHUB_SHA=('c'*40);
+        GITHUB_RUN_ID='303';GITHUB_RUN_ATTEMPT='1';GITHUB_EVENT_NAME='workflow_run';GITHUB_ACTOR='dispatcher'}
+    Assert-PublishTrustedEnvironment $taskAutomaticFixture.candidate $taskAutoEnvironment
+    $taskWrongAutoEnvironment=Copy-PublishValue $taskAutoEnvironment;$taskWrongAutoEnvironment.GITHUB_EVENT_NAME='workflow_dispatch'
+    Assert-PublishRejects {Assert-PublishTrustedEnvironment $taskAutomaticFixture.candidate $taskWrongAutoEnvironment} 'Manual dispatch authorized an automatic candidate.'
+    $taskManualCandidate=Copy-PublishValue $taskAutomaticFixture.candidate;$taskManualCandidate.schema_version=1
+    Assert-PublishRejects {Assert-PublishTrustedEnvironment $taskManualCandidate $taskAutoEnvironment} 'Automatic workflow accepted a manual candidate.'
+    foreach($taskChangedBinding in @('source_sha','candidate_sha256','release_policy_sha256','intent_sha256','preparation_sha256','authority_sha256')){
+        $taskBadAutomaticAuthority=Copy-PublishValue $taskAuthority
+        $taskBadAutomaticAuthority.$taskChangedBinding=if($taskChangedBinding -ceq 'source_sha'){'f'*40}else{'f'*64}
+        $taskBeforeMutation=$taskAutomaticFixture.state.calls.Count
+        Assert-PublishRejects {Invoke-CiPublish -Candidate $taskAutomaticFixture.candidate -Root $taskAutomaticFixture.root -Authorization $taskBadAutomaticAuthority -Transport $taskAutomaticFixture.transport -ReleasePolicy $taskAutomaticPolicy} ('Changed automatic binding accepted: '+$taskChangedBinding)
+        Assert-PublishTest ($taskAutomaticFixture.state.calls.Count -eq $taskBeforeMutation) ('Changed binding reached transport: '+$taskChangedBinding)
+    }
+    $taskResult=Invoke-CiPublish -Candidate $taskAutomaticFixture.candidate -Root $taskAutomaticFixture.root -Authorization $taskAuthority -Transport $taskAutomaticFixture.transport -ReleasePolicy $taskAutomaticPolicy
+    Assert-PublishTest ($taskResult.status -ceq 'published') 'Valid automatic v2 authority did not publish the matching synthetic candidate.'
+    Assert-PublishTest ($taskResult.schema_version -eq 2 -and $taskResult.kind -ceq 'automatic-publication-receipt' -and $taskResult.receipt_sha256 -cmatch '^[a-f0-9]{64}$') 'Automatic publication did not retain a sealed v2 receipt.'
+    $taskBefore=$taskAutomaticFixture.state.calls.Count
+    Assert-PublishRejects {Invoke-CiPublish -Candidate $taskAutomaticFixture.candidate -Root $taskAutomaticFixture.root -Authorization $taskAuthority -Transport $taskAutomaticFixture.transport -ReleasePolicy @{schema_version=1;automation_enabled=$false;initial_version=$null}} 'Disabled adoption authorized publication.'
+    Assert-PublishTest ($taskAutomaticFixture.state.calls.Count -eq $taskBefore) 'Disabled adoption reached an API operation.'
+    foreach($taskBadSchema in @('candidate','authority','policy')){
+        $taskBadCandidate=Copy-PublishValue $taskAutomaticFixture.candidate
+        $taskBadAuthority=Copy-PublishValue $taskAuthority
+        $taskBadPolicy=Copy-PublishValue $taskAutomaticPolicy
+        if($taskBadSchema -eq 'candidate'){$taskBadCandidate.schema_version='2'}
+        if($taskBadSchema -eq 'authority'){$taskBadAuthority.schema_version='2'}
+        if($taskBadSchema -eq 'policy'){$taskBadPolicy.schema_version='1'}
+        $taskBadCandidate.release_policy_sha256=Get-PublishCanonicalDigest $taskBadPolicy
+        $taskBadCandidate.release_sha256=Get-PublishRecordDigest $taskBadCandidate @('candidate_sha256','release_sha256','control')
+        $taskBadCandidate.candidate_sha256=Get-PublishRecordDigest $taskBadCandidate @('candidate_sha256')
+        $taskBadAuthority.release_policy_sha256=$taskBadCandidate.release_policy_sha256
+        $taskBadAuthority.candidate_sha256=$taskBadCandidate.candidate_sha256
+        $taskBadAuthority.authority_sha256=Get-PublishRecordDigest $taskBadAuthority @('authority_sha256')
+        Assert-PublishRejects {Assert-PublishBinding $taskBadCandidate $taskBadAuthority $taskAutomaticFixture.root $taskBadPolicy} ('String schema version was coerced: '+$taskBadSchema)
+    }
+} finally {Remove-PublishFixture $taskAutomaticFixture}
 
 Write-Output 'Publisher boundary checks passed: exact approval/CI identity, late-rerun and draft-mutation refusal, annotated tags, verified assets and immutable retries.'

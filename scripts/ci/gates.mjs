@@ -526,7 +526,9 @@ export function collectEvidence(root, context, scope = null) {
   return { receipts, errors };
 }
 
-export function workflowPolicy(workflow) {
+export function workflowPolicy(workflow, role = 'ci') {
+  ensure(['ci', 'release-automation', 'pr-report'].includes(role), 'Unknown workflow role');
+  const controlled = role !== 'ci';
   object(workflow, 'workflow'); object(workflow.on, 'workflow triggers');
   ensure(!workflow.on.pull_request_target, 'Privileged PR target execution is forbidden');
   for (const trigger of Object.values(workflow.on)) {
@@ -537,13 +539,45 @@ export function workflowPolicy(workflow) {
     if (permissions) for (const value of Object.values(permissions)) ensure(value !== 'write', 'Unprivileged CI requested write permission');
   }
   readOnly(workflow.permissions);
-  for (const job of Object.values(workflow.jobs)) {
-    readOnly(job.permissions);
+  for (const [id, job] of Object.entries(workflow.jobs)) {
+    if (controlled) {
+      const writes = role === 'release-automation' && id === 'publish' ? ['contents'] : role === 'pr-report' && id === 'comment' ? ['pull-requests'] : [];
+      for (const [permission, value] of Object.entries(job.permissions ?? {})) {
+        ensure(value === 'read' || (value === 'write' && writes.includes(permission)), 'Write authority crossed workflow role');
+      }
+      ensure(!job.defaults?.run?.['working-directory'] && !job.container && !job.services, 'Unexpected controlled execution environment');
+      ensure(!JSON.stringify(job).includes('RELEASE_APP_PRIVATE_KEY') || (role === 'release-automation' && id === 'metadata'), 'App key escaped metadata writer');
+      if(role==='pr-report')ensure(!/secrets\.|RELEASE_(?:WRITE_TOKEN|APP_)/.test(JSON.stringify(job)), 'Release credential escaped into reporter');
+    } else readOnly(job.permissions);
     for (const step of job.steps ?? []) {
+      if (controlled) {
+        ensure(!step.uses?.startsWith('actions/cache@'), 'Controlled jobs must not restore candidate caches');
+        ensure(!step.with?.cache,'Controlled actions must not restore dependency caches');
+        ensure(!step['working-directory'], 'Controlled steps must use trusted checkout');
+        if (step.run) {
+          for (const line of step.run.trim().split('\n')) {
+            ensure(/^(?:node scripts\/ci\/(?:release-automation\.mjs(?: (?:route|prepare|metadata|advance|preflight|publish))?|pr-comment\.mjs(?: (?:resolve|deliver))?)(?: --out \.build\/[a-zA-Z0-9/_-]+)?|npm ci --prefix scripts\/ci --omit=peer --ignore-scripts|\.\/scripts\/ci\/setup-windows\.ps1 -Install|cat \.build\/[a-zA-Z0-9./_-]+ >> "\$GITHUB_STEP_SUMMARY")$/.test(line.trim()), 'Untrusted command in controlled workflow');
+          }
+          if (step.run.startsWith('npm ')) ensure(step.run.includes('--ignore-scripts') && step.run.includes('--omit=peer'), 'Controlled dependency install must disable lifecycle scripts');
+          ensure(!step.run.includes('${{'), 'Controlled commands must receive event values as bounded data');
+        }
+      }
       if (!step.uses) continue;
       ensure(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.\/-]+@[a-f0-9]{40}$/.test(step.uses), 'Action is not immutable');
+      if(controlled){
+        const allowed=['actions/checkout','actions/setup-node','actions/upload-artifact','actions/download-artifact',
+          ...(role==='release-automation' && id==='metadata'?['actions/create-github-app-token']:[])];
+        ensure(allowed.includes(step.uses.split('@')[0]),'Untrusted action in controlled workflow');
+      }
       if (step.uses.startsWith('actions/checkout@')) ensure(step.with?.['persist-credentials'] === false, 'Checkout must not retain credentials');
+      if (controlled && step.uses.startsWith('actions/checkout@')) ensure(step.with?.ref === '${{ github.workflow_sha }}', 'Controlled checkout must use actual trusted workflow SHA');
     }
+  }
+  if (controlled) {
+    ensure(Array.isArray(workflow.on.workflow_run?.workflows) && workflow.on.workflow_run.workflows.includes('CI'), 'Controlled workflow needs CI completion identity');
+    const required = role === 'pr-report' ? ['resolve', 'comment'] : ['prepare', 'metadata', 'publish'];
+    ensure(required.every(id => workflow.jobs[id]), 'Missing controlled workflow role');
+    return true;
   }
   ensure(workflow.jobs.policy && workflow.jobs.rust && workflow.jobs.readiness?.if === 'always()', 'Missing fixed CI jobs or always-on readiness');
   ensure(workflow.jobs.readiness.needs.includes('policy') && workflow.jobs.readiness.needs.includes('rust'), 'Readiness omitted baseline jobs');
@@ -618,6 +652,8 @@ export async function policyRun(root, actionlint) {
     if (step.gate === 'workflow') {
       try {
         workflowPolicy(parseYaml(readFileSync(path.join(repoRoot, '.github/workflows/ci.yml'), 'utf8')));
+        workflowPolicy(parseYaml(readFileSync(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8')), 'release-automation');
+        workflowPolicy(parseYaml(readFileSync(path.join(repoRoot, '.github/workflows/quality-comment.yml'), 'utf8')), 'pr-report');
         await promotionFromEvent();
       } catch (error) { validationError = error.message; }
     }
@@ -692,7 +728,8 @@ export function cliOptions(argv) {
 }
 
 export async function githubJson(endpoint, { token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN, method = 'GET', body } = {}) {
-  ensure(endpoint.startsWith('/repos/') && !endpoint.includes('..') && !endpoint.includes('?url='), 'Unexpected GitHub endpoint');
+  const publicIdentity = method === 'GET' && (endpoint === '/user' || /^\/(?:apps\/[a-z0-9-]+|users\/[a-z0-9-]+%5Bbot%5D)$/.test(endpoint));
+  ensure((endpoint.startsWith('/repos/') || publicIdentity) && !endpoint.includes('..') && !endpoint.includes('?url='), 'Unexpected GitHub endpoint');
   const response = await fetch('https://api.github.com' + endpoint, {
     method, signal: AbortSignal.timeout(30000),
     headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',

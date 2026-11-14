@@ -1,14 +1,13 @@
 <!--
 Sync Impact Report
-Version: unratified template -> 1.0.0 (initial adoption, not a product release)
-Modified principles: all five unnamed template slots replaced by principles I-V.
-Added sections: Repository Constraints; Development Workflow; Governance.
-Removed sections: placeholder examples only.
-Updated: .specify/templates/plan-template.md, spec-template.md, tasks-template.md;
-all installed .agents/skills/speckit-*/SKILL.md repository overrides;
-AGENTS.md, CLAUDE.md, Cursor and Copilot instructions, README.md.
-Deferred: application requirements/toolchain and automated release implementation
-await future product work. No constitution placeholders or pending template sync.
+Version: 1.0.0 -> 2.0.0 (governance only, not a product release)
+Modified: IV replaces per-release manual approval for the explicitly authorized
+automatic CI flow; I clarifies its narrow existing-ref permission without granting
+interactive branch authority. Annotated tags, immutable publication and test-first
+requirements remain mandatory. User decisions: 2026-11-14, feature 004.
+Synchronized: AGENTS.md, Copilot/versioning and Cursor release rules, applicable
+Spec Kit templates. Forward-only CLAUDE.md remains unchanged.
+Activation remains disabled pending implementation, hosted proof and owner setup.
 -->
 # rustcorder Constitution
 
@@ -23,6 +22,10 @@ expected forms are `feature/RCR-<number>` and `feature/<scope>`, not requirement
 to rename other branches. Change behavior only within the explicit request.
 Preserve surrounding behavior; prohibit speculative rewrites and unrelated cleanup.
 Necessary refactors MUST be minimal and covered by behavior checks.
+
+This branch rule continues to govern interactive agents. The configured trusted
+CI release flow may update only the existing release ref with the exact bounded
+metadata tree authorized under Principle IV; it creates no branches.
 
 ### II. Test-First Behavior Validation
 
@@ -49,20 +52,34 @@ modules and explicit dependencies. Avoid Singleton by default.
 
 ### IV. Controlled Versions, Changelog and Releases
 
-Product releases MUST use SemVer `MAJOR.MINOR.PATCH`: breaking changes increment
-MAJOR, compatible features MINOR, compatible fixes and release documentation
-corrections PATCH. Ensure CHANGELOG.md exists without invented history. Do not add
-a release entry or offer release/tag commands until the user explicitly confirms
-the task is finished and working (for example, "approved" or "we can release it").
-Then inspect existing tags, versions and changelog, determine the next version,
-and add a high-level dated entry. Link RCR tickets using the configured URL in
-docs/branching.md; for scoped branches without tickets, link docs/<scope>.md.
-For other branches, use a relevant docs link without inventing a ticket/scope.
-Release tags MUST be annotated and use `vMAJOR.MINOR.PATCH` (or a SemVer prerelease
-suffix). Published tags MUST remain immutable. Recommend commands for a specific
-commit after confirmation; never execute tag creation/push without explicit
-execution authorization. Future semantic-release automation MUST preserve these
-approval and annotated-tag requirements; it is not configured by this setup.
+Product releases MUST use SemVer MAJOR.MINOR.PATCH: breaking changes increment
+MAJOR (including 0.x to 1.0.0), compatible features MINOR, compatible fixes,
+performance improvements, recognized reverts and release-documentation corrections
+PATCH. Ordinary nonbreaking maintenance does not independently create a release.
+Keep CHANGELOG.md without invented history. Preserve published entries and use
+AVO-style dated, linked version headings and grouped changes for future entries.
+Link relevant RCR tickets or existing scoped docs per docs/branching.md.
+
+Interactive release work still requires explicit user confirmation that the task
+is finished and working before adding an entry or recommending a version/tag.
+Inspect tags, versions and changelog first. Never create/push a product tag or
+publish interactively without explicit execution authorization.
+
+The user-authorized automatic flow is a bounded exception: after one-time owner
+activation, a verified merged develop-to-release PR and complete current release-
+push quality evidence authorize bounded version/changelog/quality metadata on the
+existing release ref. The generated commit MUST pass its own full required CI,
+package and native proof before automatic annotated tagging and publication.
+No additional per-release completion confirmation or environment reviewer is required.
+Main promotion retains the published version. Require explicit initial-version
+adoption configuration, trusted-main control, narrowly scoped credentials and
+source/run/attempt/artifact integrity. Disabled or incomplete setup fails closed.
+
+Release tags MUST be annotated vMAJOR.MINOR.PATCH (or an explicitly configured
+SemVer prerelease suffix). Published tags and assets MUST remain immutable.
+Matching verified partial state may resume; conflicting records MUST stop.
+This exception grants no interactive branch authority and permits no branch
+creation, force push, automatic PR merge or unrelated metadata/source mutation.
 
 ### V. Durable Documentation and Honest Evidence
 
@@ -94,8 +111,8 @@ response style solely because they are installed.
 3. Consult selection skills only for actual pattern/architecture decisions.
 4. Prove failure, implement the smallest coherent change, then prove success.
 5. Update requested docs and review constitution compliance before completion.
-6. Report checks and limits. Wait for the user's completion signal before release
-   entries or tag recommendations, and separate execution authorization for tags.
+6. Report checks and limits. Interactive release entries/tags require completion
+   confirmation and execution authorization; configured automatic CI follows IV.
 
 ## Governance
 
@@ -110,4 +127,4 @@ PATCH for non-semantic clarifications. Each plan/review MUST record compliance o
 a user-authorized exception with rationale and a bounded remediation plan.
 No exception permits silently bypassing user-owned branch operations.
 
-**Version**: 1.0.0 | **Ratified**: 2026-11-02 | **Last Amended**: 2026-11-02
+**Version**: 2.0.0 | **Ratified**: 2026-11-02 | **Last Amended**: 2026-11-14

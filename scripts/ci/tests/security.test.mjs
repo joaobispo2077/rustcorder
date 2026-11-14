@@ -6,6 +6,7 @@ import { jobNames, loadPolicy, readiness, requiredGates, workflowPolicy } from '
 
 const workflow = name => parse(readFileSync(new URL('../../../.github/workflows/' + name, import.meta.url), 'utf8'));
 const ci = workflow('ci.yml'), release = workflow('release.yml'), full = workflow('mutation-full.yml');
+const reporter = workflow('quality-comment.yml');
 const pins = JSON.parse(readFileSync(new URL('../toolchain.json', import.meta.url), 'utf8'));
 const policy = loadPolicy();
 const baseContext = JSON.parse(readFileSync(new URL('fixtures/context.json', import.meta.url), 'utf8'));
@@ -101,7 +102,7 @@ test('actual CI copies with a writable token, mutable Action, retained credentia
   }
 });
 
-test('only the protected main-controlled publisher receives a write token', () => {
+test('only the isolated main-controlled publisher receives a contents-write job token', () => {
   for (const [name, definition] of [['ci', ci], ['release', release], ['full', full]]) {
     assert.equal(definition.permissions.contents, 'read');
     assert.equal(definition.permissions.actions, 'read');
@@ -110,12 +111,13 @@ test('only the protected main-controlled publisher receives a write token', () =
       const permissions = job.permissions ?? definition.permissions;
       const writable = Object.entries(permissions).filter(([, value]) => value === 'write').map(([key]) => key);
       assert.deepEqual(writable, name === 'release' && id === 'publish' ? ['contents'] : []);
-      assert.ok(Object.keys(permissions).every(key => ['contents', 'actions'].includes(key)), 'Unexpected token scope');
+      assert.ok(Object.keys(permissions).every(key => ['contents', 'actions'].includes(key) ||
+        (name==='release' && key==='pull-requests' && permissions[key]==='read')), 'Unexpected token scope');
       assert.notEqual(job['continue-on-error'], true);
     }
   }
-  assert.equal(release.jobs.publish.environment.name, 'release-publish');
-  assert.deepEqual(needs(release.jobs.publish), ['preflight']);
+  assert.equal(release.jobs.publish.environment, undefined);
+  assert.deepEqual(needs(release.jobs.publish), ['preview','preflight']);
   assert.equal(release.jobs.publish.concurrency['cancel-in-progress'], false);
   assert.equal(release.jobs.publish.concurrency.group, 'release-publication-${{ github.repository }}');
 });
@@ -123,7 +125,7 @@ test('only the protected main-controlled publisher receives a write token', () =
 test('every release-control job executes code from the frozen trusted workflow SHA', () => {
   for (const [id, job] of Object.entries(release.jobs)) {
     ancestors(release, id);
-    assert.ok(expression(job.if).includes("github.ref=='refs/heads/main'"));
+    assert.ok(id==='preview'?expression(job.if).includes("github.ref=='refs/heads/main'"):ancestors(release,id).has('preview'));
     const checkout = steps(job).filter(step => step.uses?.startsWith('actions/checkout@'));
     assert.equal(checkout.length, 1);
     assert.equal(checkout[0].with.ref, '${{ github.workflow_sha }}');
@@ -136,41 +138,41 @@ test('every release-control job executes code from the frozen trusted workflow S
   }
 });
 
-test('dispatch modes preserve separate completion and bootstrap confirmation with safe defaults', () => {
+test('manual dispatch is preview-only and has no metadata/publication authority inputs', () => {
   const inputs = release.on.workflow_dispatch.inputs;
-  assert.deepEqual(inputs.mode.options, ['preview', 'prepare', 'publish']);
-  assert.equal(inputs.mode.default, 'preview');
-  assert.equal(inputs.mode.required, true);
-  for (const id of ['completion_confirmed', 'bootstrap_confirmed']) {
-    assert.equal(inputs[id].type, 'boolean'); assert.equal(inputs[id].default, false);
-  }
-  for (const [id, mode] of [['prepare', 'prepare'], ['preflight', 'publish'], ['publish', 'publish']]) {
-    assert.equal(expression(release.jobs[id].if),
-      "github.event_name=='workflow_dispatch'&&github.ref=='refs/heads/main'&&inputs.mode=='" + mode + "'");
-  }
-  const prepare = command(release.jobs.prepare, 'release.mjs prepare');
-  assert.equal(prepare.env.COMPLETION_CONFIRMED, '${{ inputs.completion_confirmed }}');
-  assert.equal(prepare.env.BOOTSTRAP_CONFIRMED, '${{ inputs.bootstrap_confirmed }}');
-  assert.equal(prepare.env.PROPOSAL_ARTIFACT_ID, '${{ inputs.proposal_artifact_id }}');
-  assert.equal(prepare.env.REVIEWED_PROPOSAL_SHA256, '${{ inputs.reviewed_proposal_sha256 }}');
+  assert.deepEqual(Object.keys(inputs).sort(),['source_run_attempt','source_run_id','source_sha']);
+  assert.equal(release.jobs.prepare.if,"needs.preview.outputs.state == 'source'");
+  assert.equal(release.jobs.preflight.if,"needs.preview.outputs.state == 'final'");
+  assert.equal(release.jobs.publish.if,"needs.preview.outputs.state == 'final'");
+  assert.ok(!JSON.stringify(release.jobs.publish).includes('secrets.'));
+  assert.equal(command(release.jobs.metadata,'release-automation.mjs metadata').env.RELEASE_WRITE_TOKEN,'${{ steps.app.outputs.token || secrets.GH_TOKEN }}');
 });
 
-test('publisher inputs come from the exact preflight artifact and candidate digest outputs', () => {
+test('publisher input is the immutable artifact from its own exact preflight producer', () => {
   const preflight = release.jobs.preflight;
-  assert.equal(command(preflight, 'release.mjs preflight').id, 'freeze');
+  assert.ok(command(preflight, 'release-automation.mjs preflight'));
   const upload = steps(preflight).find(step => step.uses?.startsWith('actions/upload-artifact@'));
   assert.equal(upload.id, 'candidate');
   assert.equal(upload.with['if-no-files-found'], 'error');
   assert.equal(upload.with.name, 'candidate-${{ github.run_id }}-${{ github.run_attempt }}');
   assert.deepEqual(preflight.outputs, {
-    candidate_sha256: '${{ steps.freeze.outputs.candidate_sha256 }}',
     artifact_id: '${{ steps.candidate.outputs.artifact-id }}',
-    artifact_digest: 'sha256:${{ steps.candidate.outputs.artifact-digest }}',
   });
-  const publish = command(release.jobs.publish, 'release.mjs publish');
+  const publish = command(release.jobs.publish, 'release-automation.mjs publish');
   assert.equal(publish.env.CANDIDATE_ARTIFACT_ID, '${{ needs.preflight.outputs.artifact_id }}');
-  assert.equal(publish.env.CANDIDATE_ARTIFACT_DIGEST, '${{ needs.preflight.outputs.artifact_digest }}');
-  assert.equal(publish.env.CANDIDATE_SHA256, '${{ needs.preflight.outputs.candidate_sha256 }}');
+  assert.equal(publish.env.GH_TOKEN,'${{ github.token }}');
+});
+
+test('controlled write jobs reject appended commands, action caches and credential scope crossing',()=>{
+  for(const [role,original,job]of [['release-automation',release,'metadata'],['pr-report',reporter,'comment']]){
+    for(const mutate of [
+      value=>{value.jobs[job].steps.push({run:'node scripts/ci/release-automation.mjs route; node candidate/evil.mjs'});},
+      value=>{value.jobs[job].steps.find(step=>step.uses?.startsWith('actions/setup-node@')).with.cache='npm';},
+      value=>{value.jobs[job].steps.push({uses:'unknown/action@'+'a'.repeat(40)});},
+    ]){const value=structuredClone(original);mutate(value);assert.throws(()=>workflowPolicy(value,role));}
+  }
+  const escaped=structuredClone(reporter);escaped.jobs.comment.steps[2].env={RELEASE_WRITE_TOKEN:'${{ secrets.GH_TOKEN }}'};
+  assert.throws(()=>workflowPolicy(escaped,'pr-report'));
 });
 
 test('evidence uploads are attempt-specific immutable artifacts retained for fourteen days', () => {

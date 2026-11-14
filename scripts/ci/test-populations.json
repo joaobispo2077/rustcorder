@@ -21,5 +21,42 @@
     "combined_recording::real_combined_start_stop_and_retained_wav",
     "file_transcription::actual_file_worker_returns_progress_and_text_without_modifying_audio",
     "microphone_recording::real_microphone_start_stop_and_retained_wav"
-  ]
+  ],
+  "ci_support": {
+    "target": "node:test",
+    "required": true,
+    "suites": [
+      "authorization",
+      "automation-fixtures",
+      "collector",
+      "context",
+      "contracts",
+      "dependencies",
+      "download",
+      "measurements",
+      "mutation",
+      "mutation-config",
+      "mutation-rust-config",
+      "notes",
+      "populations",
+      "pr-comment",
+      "pr-comment-workflow",
+      "pr-decisions",
+      "preparation",
+      "preview-workflow",
+      "promotion",
+      "proposal",
+      "publisher-scope",
+      "release-automation",
+      "release-decisions",
+      "release-flow",
+      "report",
+      "reproduction",
+      "security",
+      "semantic",
+      "setup",
+      "windows-budget",
+      "workflows"
+    ]
+  }
 }

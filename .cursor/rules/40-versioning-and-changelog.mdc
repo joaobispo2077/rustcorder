@@ -5,4 +5,9 @@ alwaysApply: true
 
 Read @AGENTS.md and @.specify/memory/constitution.md.
 
-Follow SemVer; ensure CHANGELOG.md exists. Add a high-level next-version release entry only after the user confirms finished and working. Inspect tags and current versions first. Link branch tickets or scoped docs per docs/branching.md. Only then offer annotated tag commands for a specific commit. Never create/push tags without explicit execution authorization. Keep published tags immutable.
+Follow SemVer and the release policy in AGENTS.md and Constitution IV. Interactive
+entries/tag recommendations require user completion confirmation, and tag execution
+requires explicit authorization. The owner-activated trusted automatic release flow
+uses verified merge plus complete source/final-version gates instead of per-release
+confirmation/review. It may write only bounded metadata to the existing release ref.
+Keep annotated tags, published history/assets and interactive branch ownership intact.

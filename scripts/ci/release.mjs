@@ -12,17 +12,88 @@ import {
 } from './gates.mjs';
 
 const logger = { log() {} };
+
+const automaticDigests = Object.freeze({
+  'automatic-preparation': 'preparation_sha256',
+  'metadata-intent': 'intent_sha256',
+  'automatic-candidate': 'candidate_sha256',
+  'automatic-publication-authority': 'authority_sha256',
+  'automatic-publication-receipt': 'receipt_sha256',
+});
+
+export function validateReleasePolicy(policy) {
+  ensure(policy && typeof policy === 'object' && !Array.isArray(policy) &&
+    Object.keys(policy).sort().join('|') === 'automation_enabled|initial_version|schema_version', 'Invalid automatic release policy fields');
+  ensure(policy.schema_version === 1 && typeof policy.automation_enabled === 'boolean', 'Invalid automatic release policy');
+  ensure(policy.initial_version === null || (typeof policy.initial_version === 'string' &&
+    semver.valid(policy.initial_version) === policy.initial_version && !semver.prerelease(policy.initial_version) &&
+    !policy.initial_version.includes('+')), 'Initial release version must be explicit stable SemVer or null');
+  return policy;
+}
+
+export function loadReleasePolicy(cwd = repoRoot) {
+  return validateReleasePolicy(jsonFile(path.join(cwd, 'scripts/ci/release-policy.json')));
+}
+
+export function sealAutomaticRecord(kind, body) {
+  ensure(Object.hasOwn(automaticDigests, kind), 'Unknown automatic release record kind');
+  const field = automaticDigests[kind];
+  ensure(!Object.hasOwn(body, field), 'Automatic record is already sealed');
+  const value = { ...structuredClone(body), schema_version: 2, kind };
+  return validateAutomaticRecord({ ...value, [field]: canonicalDigest(value) }, kind);
+}
+
+export function validateAutomaticRecord(record, kind) {
+  ensure(Object.hasOwn(automaticDigests, kind) && record?.schema_version === 2 && record.kind === kind, 'Automatic release record schema/kind mismatch');
+  const field = automaticDigests[kind], { [field]: checksum, ...body } = record;
+  ensure(typeof checksum === 'string' && SHA256.test(checksum) && canonicalDigest(body) === checksum, 'Automatic record digest mismatch');
+  ensure(record.repository === loadPolicy().repository && typeof record.source_sha === 'string' && SHA.test(record.source_sha), 'Automatic record source/repository mismatch');
+  ensure(typeof record.release_policy_sha256 === 'string' && SHA256.test(record.release_policy_sha256), 'Missing automatic release policy identity');
+  ensure(typeof record.version === 'string' && semver.valid(record.version) === record.version &&
+    !semver.prerelease(record.version) && !record.version.includes('+'), 'Invalid automatic record version');
+  counter(record.control?.run_id, 'automatic control run', true);
+  counter(record.control.run_attempt, 'automatic control attempt', true);
+  counter(record.control.workflow_id, 'automatic control workflow', true);
+  ensure(typeof record.control.source_sha === 'string' && SHA.test(record.control.source_sha), 'Invalid automatic control SHA');
+  return record;
+}
+
+export function validateAutomaticAuthority(candidate, authority, policy) {
+  validateAutomaticRecord(candidate, 'automatic-candidate');
+  validateAutomaticRecord(authority, 'automatic-publication-authority');
+  validateReleasePolicy(policy);
+  ensure(authority.actor==='automatic-ci' && Object.keys(authority).sort().join('|')===
+    'actor|authority_sha256|candidate_sha256|control|intent_sha256|kind|preparation_sha256|release_policy_sha256|repository|schema_version|source_sha|version',
+  'Automatic authority cannot contain manual approval identity or fields');
+  ensure(policy.automation_enabled === true && candidate.release_policy_sha256 === canonicalDigest(policy), 'Automatic publication is disabled or its policy changed');
+  for (const field of ['repository', 'source_sha', 'version', 'release_policy_sha256', 'candidate_sha256', 'intent_sha256', 'preparation_sha256']) {
+    ensure(typeof candidate[field] === 'string' && authority[field] === candidate[field], 'Automatic authority binding mismatch: ' + field);
+  }
+  ensure(SHA256.test(candidate.intent_sha256) && SHA256.test(candidate.preparation_sha256) &&
+    canonicalDigest(candidate.control) === canonicalDigest(authority.control), 'Automatic authority control/intent mismatch');
+  return true;
+}
+
+export function releaseHeadings(changelog) {
+  ensure(typeof changelog === 'string' && Buffer.byteLength(changelog) <= 8 * 1024 * 1024 && !changelog.includes('\0'), 'Invalid release notes source');
+  const pattern = /^(#{1,2}) (?:\[v?(\d+\.\d+\.\d+)\](?:\([^\r\n]*\))?|v?(\d+\.\d+\.\d+))(?: - (\d{4}-\d{2}-\d{2})| \((\d{4}-\d{2}-\d{2})\))\r?$/gm;
+  return [...changelog.matchAll(pattern)].map(match => {
+    const version = match[2] ?? match[3], date = match[4] ?? match[5];
+    ensure(semver.valid(version) === version && new Date(date + 'T00:00:00Z').toISOString().slice(0, 10) === date, 'Invalid release heading version/date');
+    return { version, date, index: match.index, end: match.index + match[0].length, angular: Boolean(match[5]) };
+  });
+}
+
 export function releaseEntry(changelog, version) {
-  ensure(typeof changelog==='string' && semver.valid(version)===version,'Invalid release notes source');
-  const escaped=version.replaceAll('.','\\.');
-  const heading=new RegExp('^## '+escaped+' - \\d{4}-\\d{2}-\\d{2}\\r?\\n','gm');
-  const matches=[...changelog.matchAll(heading)];
-  ensure(matches.length===1,'Missing/ambiguous confirmed release notes');
-  const tail=changelog.slice(matches[0].index+matches[0][0].length),next=tail.search(/^## /m);
-  const notes=(next<0?tail:tail.slice(0,next)).trim();
-  ensure(notes.length>0 && notes.length<=262144 && !notes.includes('\0'),'Missing/oversized release notes');
+  ensure(semver.valid(version) === version, 'Invalid release notes version');
+  const headings = releaseHeadings(changelog), matches = headings.filter(entry => entry.version === version);
+  ensure(matches.length === 1, 'Missing/ambiguous confirmed release notes');
+  const entry = matches[0], next = headings.find(heading => heading.index > entry.index);
+  const notes = changelog.slice(entry.angular ? entry.index : entry.end, next?.index ?? changelog.length).trim();
+  ensure(notes.length > 0 && Buffer.byteLength(notes) <= 262144, 'Missing/oversized release notes');
   return notes;
 }
+
 export function verifyArtifactMetadata(raw, frozen, runId) {
   counter(frozen.id, 'artifact ID', true); counter(frozen.size_in_bytes, 'artifact bytes', true);
   ensure(/^sha256:[a-f0-9]{64}$/.test(frozen.api_digest) && frozen.size_in_bytes <= 512 * 1024 * 1024, 'Invalid bounded artifact');
@@ -53,26 +124,104 @@ export async function downloadArtifact(repository, frozen, runId, target, api = 
   return target;
 }
 
-export async function controlArtifact(id, kind, api = githubJson) {
+export async function controlArtifact(id, kind, api = githubJson, { allowHistorical = false, activeControl = null } = {}) {
   counter(id, 'control artifact ID', true);
   ensure(['proposal','preparation','candidate'].includes(kind), 'Unknown control artifact kind');
   const prefix = '/repos/' + loadPolicy().repository;
   const raw = await api(prefix + '/actions/artifacts/' + id);
   counter(raw.workflow_run?.id, 'artifact control run', true);
-  const run = await api(prefix + '/actions/runs/' + raw.workflow_run.id);
+  let run = await api(prefix + '/actions/runs/' + raw.workflow_run.id);
+  if (allowHistorical) {
+    const name = raw.name?.match(new RegExp('^' + kind + '-(?:[a-f0-9]{40}-)?' + raw.workflow_run.id + '-([1-9][0-9]*)$'));
+    ensure(name, 'Malformed exact-attempt control artifact name');
+    const attempt = Number(name[1]); counter(attempt, 'artifact creator attempt', true);
+    run = await api(prefix + '/actions/runs/' + raw.workflow_run.id + '/attempts/' + attempt);
+  }
   const workflow = await api(prefix + '/actions/workflows/release.yml');
   counter(run.run_attempt, 'control artifact attempt', true);
-  ensure(run.status === 'completed' && run.conclusion === 'success' &&
+  const active = activeControl && run.status === 'in_progress' && run.id === activeControl.run_id &&
+    run.run_attempt === activeControl.run_attempt && run.head_sha === activeControl.source_sha;
+  const recovered = allowHistorical && run.status === 'completed' && ['failure','cancelled'].includes(run.conclusion) &&
+    await controlProducerPassed(run,kind==='preparation'?'Prepare automatic release metadata':'Freeze automatic publication candidate',api,
+      kind==='preparation'?['Freeze verified preparation','Persist verified preparation']:[]);
+  ensure(((run.status === 'completed' && run.conclusion === 'success') || active || recovered) &&
     ['workflow_run','workflow_dispatch'].includes(run.event) && run.head_branch === 'main' &&
     run.repository?.full_name === loadPolicy().repository && run.repository.id === run.head_repository?.id &&
     run.path?.split('@')[0] === '.github/workflows/release.yml' && workflow.path === '.github/workflows/release.yml' &&
     run.workflow_id === workflow.id && raw.workflow_run.head_sha === run.head_sha &&
-    raw.name === kind + '-' + run.id + '-' + run.run_attempt, 'Untrusted/stale control artifact provenance');
+    (raw.name === kind + '-' + run.id + '-' + run.run_attempt || (kind==='preparation' &&
+      new RegExp('^preparation-[a-f0-9]{40}-'+run.id+'-'+run.run_attempt+'$').test(raw.name))), 'Untrusted/stale control artifact provenance');
+  if (active) {
+    const expected = kind === 'preparation' ? 'Prepare automatic release metadata' : kind === 'candidate' ? 'Freeze automatic publication candidate' : null;
+    ensure(expected, 'Unsupported active control artifact role');
+    const jobs = await paginate(api, prefix + '/actions/runs/' + run.id + '/attempts/' + run.run_attempt + '/jobs', 'jobs');
+    const matches = jobs.filter(job => job.name === expected);
+    ensure(matches.length === 1 && matches[0].status === 'completed' && matches[0].conclusion === 'success', 'Control artifact producer job is incomplete');
+  }
   const frozen = {id:raw.id,name:raw.name,api_digest:raw.digest,size_in_bytes:raw.size_in_bytes};
   verifyArtifactMetadata(raw,frozen,run.id);
   const target = path.join(releaseScratch('release-input-'),kind);
   await downloadArtifact(loadPolicy().repository,frozen,run.id,target,api);
   return {root:target,artifact:frozen,run};
+}
+
+export async function metadataIntentArtifact(id, source, api = githubJson, { activeControl = null, download = downloadArtifact } = {}) {
+  counter(id, 'metadata intent artifact', true);
+  ensure(typeof source === 'string' && SHA.test(source), 'Invalid metadata intent source');
+  const repository=loadPolicy().repository,prefix='/repos/'+repository;
+  const raw=await api(prefix+'/actions/artifacts/'+id);
+  const name=raw.name?.match(/^metadata-([a-f0-9]{40})-([1-9][0-9]*)-([1-9][0-9]*)$/);
+  ensure(name && name[1]===source && raw.workflow_run?.id===Number(name[2]), 'Wrong metadata intent artifact name/origin');
+  const runId=Number(name[2]),attempt=Number(name[3]);counter(runId,'intent creator run',true);counter(attempt,'intent creator attempt',true);
+  const run=await api(prefix+'/actions/runs/'+runId+'/attempts/'+attempt);
+  const workflow=await api(prefix+'/actions/workflows/release.yml');
+  const active=activeControl && run.status==='in_progress' && run.id===activeControl.run_id &&
+    run.run_attempt===activeControl.run_attempt && run.head_sha===activeControl.source_sha;
+  const recoverable=run.status==='completed' && ['failure','cancelled'].includes(run.conclusion);
+  const producer=(active || recoverable) && await controlProducerPassed(run,'Write bounded release metadata',api,
+    ['Create exact metadata objects','Persist metadata intent']);
+  ensure(((run.status==='completed' && run.conclusion==='success') || producer) && run.id===runId && run.run_attempt===attempt &&
+    run.event==='workflow_run' && run.head_branch==='main' && run.repository?.full_name===repository &&
+    run.repository.id===run.head_repository?.id && workflow.path==='.github/workflows/release.yml' && workflow.state==='active' &&
+    run.workflow_id===workflow.id && run.path?.split('@')[0]===workflow.path && raw.workflow_run.head_sha===run.head_sha,
+  'Untrusted exact-attempt metadata writer provenance');
+  const frozen={id:raw.id,name:raw.name,api_digest:raw.digest,size_in_bytes:raw.size_in_bytes};
+  verifyArtifactMetadata(raw,frozen,runId);ensure(frozen.size_in_bytes<=1024*1024,'Metadata intent archive exceeds bound');
+  const root=path.join(releaseScratch('release-intent-'),'intent');
+  await download(repository,frozen,runId,root,api);
+  const entries=filesBelow(root);ensure(entries.length===1 && path.basename(entries[0])==='metadata-intent.json','Unexpected metadata intent archive files');
+  const bytes=readFileSync(containedFile(root,'metadata-intent.json'));ensure(bytes.length<=1024*1024,'Metadata intent JSON exceeds bound');
+  const record=validateAutomaticRecord(JSON.parse(utf8(bytes)),'metadata-intent');
+  ensure(record.source_sha===source && record.control.run_id===runId && record.control.run_attempt===attempt &&
+    record.control.source_sha===run.head_sha && record.control.workflow_id===workflow.id &&
+    record.control.actor===run.actor?.login && typeof record.parent_sha==='string' && SHA.test(record.parent_sha) &&
+    typeof record.expected_tree==='string' && SHA.test(record.expected_tree) && SHA256.test(record.preparation_sha256),
+  'Metadata intent record/control identity mismatch');
+  metadataWriter(record);
+  return {record,artifact:frozen,run,root};
+}
+
+async function controlProducerPassed(run,name,api,steps=[]) {
+  const jobs=await paginate(api,'/repos/'+loadPolicy().repository+'/actions/runs/'+run.id+'/attempts/'+run.run_attempt+'/jobs','jobs');
+  const found=jobs.filter(job=>job.name===name);
+  if(found.length!==1 || found[0].run_id!==run.id || found[0].run_attempt!==run.run_attempt)return false;
+  if(!steps.length)return found[0].status==='completed' && found[0].conclusion==='success';
+  return steps.every(name=>{const matches=found[0].steps?.filter(step=>step.name===name);return matches?.length===1 &&
+    matches[0].status==='completed' && matches[0].conclusion==='success';});
+}
+
+export function metadataWriter(record) {
+  ensure(Boolean(record.app) !== Boolean(record.writer), 'Exactly one authenticated metadata writer is required');
+  if(record.app){
+    counter(record.app.id,'intent App ID',true);counter(record.app.bot_id,'intent App bot ID',true);
+    ensure(typeof record.app.slug==='string' && /^[a-z0-9][a-z0-9-]{0,98}$/.test(record.app.slug) &&
+      record.app.login===record.app.slug+'[bot]','Invalid metadata App identity');
+    return {id:record.app.bot_id,login:record.app.login};
+  }
+  counter(record.writer?.id,'token writer identity',true);
+  ensure(record.writer.kind==='token' && typeof record.writer.login==='string' &&
+    /^[A-Za-z0-9][A-Za-z0-9-]{0,98}(?:\[bot\])?$/.test(record.writer.login),'Invalid authenticated token identity');
+  return {id:record.writer.id,login:record.writer.login};
 }
 
 export function frozenSourceScope(source, kind = 'hosted', cwd = repoRoot) {
@@ -102,7 +251,9 @@ function candidateDigest(candidate) {
 }
 
 export function validateCandidateRequest(candidate) {
-  ensure(candidate?.schema_version === 1 && candidate.kind === 'release-candidate' &&
+  const automatic = candidate?.schema_version === 2 && candidate.kind === 'automatic-candidate';
+  if (automatic) validateAutomaticRecord(candidate, 'automatic-candidate');
+  ensure((automatic || (candidate?.schema_version === 1 && candidate.kind === 'release-candidate')) &&
     candidate.repository === loadPolicy().repository && candidate.candidate_sha256 === candidateDigest(candidate), 'Frozen candidate digest/schema mismatch');
   const {candidate_sha256,release_sha256,control,...releaseIdentity} = candidate;
   ensure(SHA256.test(release_sha256) && release_sha256 === canonicalDigest(releaseIdentity), 'Frozen release identity mismatch');
@@ -128,7 +279,8 @@ export async function prepareFromArtifact({id,reviewed,confirmation,control,out}
   await verifySourceAttempt({repository:proposal.repository,run_id:proposal.context.run_id,
     run_attempt:proposal.context.run_attempt,source_sha:proposal.source_sha},api);
   const refreshed = await createProposal({source_sha:proposal.source_sha,context:proposal.context,
-    evidence:proposal.evidence,control:proposal.control,published:await publishedReleases(proposal.repository,api)});
+    evidence:proposal.evidence,control:proposal.control,date:proposal.date,initial_version:proposal.previous ? null : proposal.version,
+    published:await publishedReleases(proposal.repository,api)});
   ensure(proposalDigest(refreshed) === reviewed, 'Proposal or previous release changed after review');
   const result = await prepareProposal({proposal,reviewed_sha256:reviewed,confirmation,control,fetch:true});
   await verifySourceAttempt({repository:proposal.repository,run_id:proposal.context.run_id,
@@ -140,24 +292,12 @@ export async function prepareFromArtifact({id,reviewed,confirmation,control,out}
   return result.manifest;
 }
 
-export async function preflight({preparationId,request,control,out}, api = githubJson) {
-  const prepared = await controlArtifact(preparationId,'preparation',api);
-  const manifest = validatePreparation(jsonFile(containedFile(prepared.root,'preparation.json')));
-  ensure(manifest.confirmation.run_id === prepared.run.id && manifest.confirmation.run_attempt === prepared.run.run_attempt &&
-    manifest.confirmation.workflow_sha === prepared.run.head_sha, 'Preparation artifact/control mismatch');
-  ensure(digest(readFileSync(containedFile(prepared.root,'preparation.patch'))) === manifest.patch_sha256, 'Preparation patch hash mismatch');
-  const scope = frozenSourceScope(request.source_sha);
-  verifyCandidate(manifest,{sha:request.source_sha,tree_sha:scope.package.tree_sha,
-    parents:git(['rev-list','--parents','-n','1',request.source_sha]).split(' ').slice(1),version:scope.package.version});
-  ensure(scope.policy_sha256 === manifest.policy_sha256 && scope.toolchain_sha256 === manifest.toolchain_sha256, 'Prepared policy/tool identity changed');
-  const published = await publishedReleases(request.repository,api);
-  const previous = releaseHistory(repoRoot,manifest.source_sha,published.filter(x =>
-    !(x.tag_name === 'v'+manifest.version && x.target_sha === request.source_sha))).previous;
-  ensure(canonicalDigest(previous) === canonicalDigest(manifest.previous), 'Published release state changed since preparation');
+export async function certifyReleaseSource(request, { api = githubJson, download = downloadArtifact,
+  cwd = repoRoot, scope = frozenSourceScope(request.source_sha, 'hosted', cwd), requireReport = true } = {}) {
   const evidence = await verifySourceAttempt(request,api);
   const root = path.join(releaseScratch('release-candidate-'),'inputs'); mkdirSync(root);
   for (const [kind,artifact] of Object.entries(evidence.artifacts)) {
-    await downloadArtifact(request.repository,artifact,request.run_id,path.join(root,kind),api);
+    await download(request.repository,artifact,request.run_id,path.join(root,kind),api);
   }
   const certificationFile = containedFile(path.join(root,'certification'),'certification.json');
   const certification = jsonFile(certificationFile), context = certification.context;
@@ -175,9 +315,53 @@ export async function preflight({preparationId,request,control,out}, api = githu
   const packageReceipts = collected.receipts.filter(x => x.gate === 'package');
   ensure(packageReceipts.length === 1 && packageReceipts[0].measurements?.kind === 'hosted-release-package', 'Missing final native package certification');
   const pkgRoot = path.join(root,'package','package');
-  const packageMeasurement = (await import('./gates.mjs')).gateMeasurement('package',path.join(root,'package'),scope.policy,repoRoot,scope);
+  const packageMeasurement = (await import('./gates.mjs')).gateMeasurement('package',path.join(root,'package'),scope.policy,cwd,scope);
   ensure(canonicalDigest(packageMeasurement) === canonicalDigest(packageReceipts[0].measurements), 'Package artifact differs from quality receipt');
   const packageManifest = jsonFile(containedFile(pkgRoot,'package-manifest.json'));
+  let report = null;
+  if (requireReport) {
+    report = jsonFile(containedFile(path.join(root, 'quality'), 'report/report.json'));
+    validateContext(report.context);
+    const { job_id: reportJob, ...reportIdentity } = report.context;
+    const { job_id: certificationJob, ...certificationIdentity } = context;
+    ensure(report.schema_version === 1 && canonicalDigest(reportIdentity) === canonicalDigest(certificationIdentity) &&
+      report.receipts_sha256 === digest(JSON.stringify(collected.receipts)), 'Source quality report differs from certified evidence');
+  }
+  await verifySourceAttempt(request, api);
+  return { root, scope, evidence, context, collected, certification, certificationFile, pkgRoot, packageManifest, report };
+}
+
+export async function preflight({preparationId,request,control,out,intent = null,cwd=repoRoot,
+  loadPreparation=controlArtifact,certify=certifyReleaseSource}, api = githubJson) {
+  const prepared = await loadPreparation(preparationId,'preparation',api,{allowHistorical:Boolean(intent)});
+  const manifest = validatePreparation(jsonFile(containedFile(prepared.root,'preparation.json')));
+  const preparationControl = manifest.schema_version === 2 ? manifest.control : {
+    run_id:manifest.confirmation.run_id,run_attempt:manifest.confirmation.run_attempt,source_sha:manifest.confirmation.workflow_sha };
+  ensure(preparationControl.run_id === prepared.run.id && preparationControl.run_attempt === prepared.run.run_attempt &&
+    preparationControl.source_sha === prepared.run.head_sha, 'Preparation artifact/control mismatch');
+  if (manifest.schema_version === 2) {
+    ensure(manifest.control.workflow_id===prepared.run.workflow_id && manifest.control.actor===prepared.run.actor?.login,
+      'Automatic preparation creator workflow/actor changed');
+    validateAutomaticRecord(intent?.record, 'metadata-intent');
+    ensure(intent.record.source_sha === request.source_sha && intent.record.parent_sha === manifest.source_sha &&
+      intent.record.expected_tree === manifest.expected_tree && intent.record.version === manifest.version &&
+      intent.record.preparation_sha256 === manifest.preparation_sha256 && intent.record.preparation.id === prepared.artifact.id &&
+      canonicalDigest(intent.record.preparation) === canonicalDigest(prepared.artifact), 'Final metadata intent/preparation mismatch');
+    ensure(prepared.run.event==='workflow_run','Automatic preparation requires CI control provenance');
+    const policy = loadReleasePolicy(cwd);
+    ensure(policy.automation_enabled && canonicalDigest(policy) === manifest.release_policy_sha256, 'Automatic candidate policy is disabled or changed');
+  } else ensure(!intent, 'Manual preparation cannot enter automatic continuation');
+  ensure(digest(readFileSync(containedFile(prepared.root,'preparation.patch'))) === manifest.patch_sha256, 'Preparation patch hash mismatch');
+  const scope = frozenSourceScope(request.source_sha,'hosted',cwd);
+  verifyCandidate(manifest,{sha:request.source_sha,tree_sha:scope.package.tree_sha,
+    parents:git(['rev-list','--parents','-n','1',request.source_sha],cwd).split(' ').slice(1),version:scope.package.version});
+  ensure(scope.policy_sha256 === manifest.policy_sha256 && scope.toolchain_sha256 === manifest.toolchain_sha256, 'Prepared policy/tool identity changed');
+  const published = await publishedReleases(request.repository,api);
+  const previous = releaseHistory(cwd,manifest.source_sha,published.filter(x =>
+    !(x.tag_name === 'v'+manifest.version && x.target_sha === request.source_sha))).previous;
+  ensure(canonicalDigest(previous) === canonicalDigest(manifest.previous), 'Published release state changed since preparation');
+  const { evidence, root, context, collected, certificationFile, pkgRoot, packageManifest } =
+    await certify(request, { api, scope,cwd, requireReport: manifest.schema_version === 2 });
   mkdirSync(out,{recursive:true});
   const attachments = [
     [containedFile(pkgRoot,packageManifest.zip.path),packageManifest.zip.path],
@@ -185,35 +369,48 @@ export async function preflight({preparationId,request,control,out}, api = githu
     [containedFile(pkgRoot,'package-manifest.json'),'package-manifest.json'],
     [certificationFile,'certification.json'],
   ];
-  const noteText=releaseEntry(gitBytes(['show',request.source_sha+':CHANGELOG.md']).toString('utf8'),manifest.version);
+  if (manifest.schema_version === 2) {
+    const intentPath = path.join(out,'metadata-intent.json'); writeJson(intentPath,intent.record);
+    const policyPath = path.join(out,'release-policy.json'); writeJson(policyPath,loadReleasePolicy(cwd));
+    attachments.push([containedFile(prepared.root,'preparation.json'),'preparation.json'],
+      [containedFile(path.join(root,'quality'),'report/report.json'),'quality-report.json']);
+  }
+  const noteText=releaseEntry(gitBytes(['show',request.source_sha+':CHANGELOG.md'],cwd).toString('utf8'),manifest.version);
   const notes = Buffer.from(noteText+'\n');
   const notesPath = path.join(out,'release-notes.md'); writeFileSync(notesPath,notes,{flag:'wx'});
   const files = attachments.map(([src,name]) => {
     writeFileSync(path.join(out,name),readFileSync(src),{flag:'wx'});
     return {name,path:name,bytes:readFileSync(src).length,sha256:digest(readFileSync(src))};
   });
+  if (manifest.schema_version === 2) for (const name of ['metadata-intent.json','release-policy.json']) {
+    const bytes=readFileSync(path.join(out,name));files.push({name,path:name,bytes:bytes.length,sha256:digest(bytes)});
+  }
   files.push({name:'release-notes.md',path:'release-notes.md',bytes:notes.length,sha256:digest(notes)});
-  const body = {schema_version:1,kind:'release-candidate',repository:request.repository,version:manifest.version,
+  const body = {schema_version:manifest.schema_version,kind:manifest.schema_version === 2 ? 'automatic-candidate' : 'release-candidate',repository:request.repository,version:manifest.version,
     source_sha:request.source_sha,tree_sha:scope.package.tree_sha,previous:manifest.previous,
     preparation:prepared.artifact,preparation_sha256:manifest.preparation_sha256,
     ci:{...request,workflow_id:evidence.workflow_id,repository_id:evidence.repository_id},artifacts:evidence.artifacts,control,files,notes:noteText};
+  if (manifest.schema_version === 2) Object.assign(body,{release_policy_sha256:manifest.release_policy_sha256,
+    intent_sha256:intent.record.intent_sha256,metadata_intent:intent.artifact});
   const {control:excludedControl,...releaseIdentity} = body;
   const frozen = {...body,release_sha256:canonicalDigest(releaseIdentity)};
   const candidate = {...frozen,candidate_sha256:canonicalDigest(frozen)}; validateCandidateRequest(candidate);
   writeJson(path.join(out,'candidate.json'),candidate);
-  writeFileSync(path.join(out,'candidate.md'),'# Publication approval\n\nVersion: '+candidate.version+'\n\nCommit: '+candidate.source_sha+
+  writeFileSync(path.join(out,'candidate.md'),'# Publication candidate\n\nVersion: '+candidate.version+'\n\nCommit: '+candidate.source_sha+
     '\n\nEvidence digest: '+candidate.candidate_sha256+'\n\nRequested actions: annotated tag, verified draft attachments, publication.\n\n'+
-    'Enter this exact review comment in the protected environment approval:\n\n'+approvalText(candidate)+'\n');
+    (candidate.schema_version===2 ? 'Authorized by the enabled automatic policy and this commit’s complete final CI evidence.\n' :
+      'Enter this exact review comment in the protected environment approval:\n\n'+approvalText(candidate)+'\n'));
   // Recheck mutable state after all downloads and hashing, before exposing approval.
   await verifySourceAttempt(request,api);
   return candidate;
 }
 
-export async function authorizePublication(candidate, root, control, api = githubJson, cwd = repoRoot) {
+export async function authorizePublication(candidate, root, control, api = githubJson, cwd = repoRoot,
+  {loadPreparation=controlArtifact,loadIntent=metadataIntentArtifact}={}) {
   validateCandidateRequest(candidate);
   ensure(canonicalDigest(candidate.control) === canonicalDigest(control), 'Frozen control run/attempt changed');
   await verifySourceAttempt(candidate.ci,api);
-  const now = await controlArtifact(candidate.preparation.id,'preparation',api);
+  const now = await loadPreparation(candidate.preparation.id,'preparation',api,{allowHistorical:candidate.schema_version === 2});
   ensure(canonicalDigest(now.artifact) === canonicalDigest(candidate.preparation), 'Frozen preparation artifact changed');
   const scope = frozenSourceScope(candidate.source_sha,'hosted',cwd);
   ensure(scope.package.version === candidate.version && scope.package.tree_sha === candidate.tree_sha, 'Frozen candidate source changed');
@@ -226,6 +423,21 @@ export async function authorizePublication(candidate, root, control, api = githu
   const history = releaseHistory(cwd,candidate.source_sha,(await publishedReleases(candidate.repository,api))
     .filter(x => !(x.tag_name === 'v'+candidate.version && x.target_sha === candidate.source_sha)));
   ensure(canonicalDigest(history.previous) === canonicalDigest(candidate.previous), 'Previous release changed after approval');
+  if (candidate.schema_version === 2) {
+    const policy=loadReleasePolicy(cwd);
+    const intent=await loadIntent(candidate.metadata_intent.id,candidate.source_sha,api);
+    ensure(canonicalDigest(intent.artifact)===canonicalDigest(candidate.metadata_intent) &&
+      intent.record.intent_sha256===candidate.intent_sha256 && intent.record.preparation_sha256===candidate.preparation_sha256,
+    'Automatic metadata intent changed after candidate freeze');
+    const authority=sealAutomaticRecord('automatic-publication-authority', {repository:candidate.repository,
+      source_sha:candidate.source_sha,version:candidate.version,release_policy_sha256:candidate.release_policy_sha256,
+      candidate_sha256:candidate.candidate_sha256,intent_sha256:candidate.intent_sha256,
+      preparation_sha256:candidate.preparation_sha256,control,actor:'automatic-ci'});
+    validateAutomaticAuthority(candidate,authority,policy);
+    const final=await verifySourceAttempt(candidate.ci,api);
+    ensure(canonicalDigest(final.artifacts) === canonicalDigest(candidate.artifacts), 'Automatic final CI artifact substitution');
+    return authority;
+  }
   const prefix = '/repos/'+candidate.repository;
   const approval = verifyApproval(candidate,await api(prefix+'/environments/release-publish'),
     await api(prefix+'/actions/runs/'+control.run_id+'/approvals'));
@@ -255,6 +467,7 @@ export function verifyApproval(request, environment, reviews) {
 }
 export const semanticConfig = {
   preset: 'conventionalcommits',
+  parserOpts: { noteKeywords: ['BREAKING CHANGE', 'BREAKING CHANGES', 'BREAKING', 'BREAKING-CHANGE'] },
   releaseRules: [
     { breaking: true, release: 'major' },
     { type: 'feat', release: 'minor' },
@@ -271,6 +484,38 @@ function semanticCommits(messages) {
 
 export async function semanticImpact(messages, cwd = repoRoot) {
   return analyzeCommits(semanticConfig, { commits: semanticCommits(messages), cwd, logger });
+}
+
+export function notesInputs(messages) {
+  ensure(Array.isArray(messages) && messages.length <= 10000, 'Invalid notes commit population');
+  return semanticCommits(messages).map(entry => {
+    ensure(typeof entry.message === 'string' && Buffer.byteLength(entry.message) <= 262144 &&
+      typeof entry.hash === 'string' && SHA.test(entry.hash), 'Invalid notes commit identity');
+    const [header, ...rest] = entry.message.replaceAll('\r\n', '\n').split('\n');
+    const bang = header.match(/^\w+(?:\([^\r\n)]*\))?!: (.+)$/);
+    let normalized = header.replace(/^docs(\(release\))(!?): /, 'fix$1$2: ');
+    let body = rest.join('\n');
+    if (bang) {
+      normalized = normalized.replace(/!: /, ': ');
+      if (!/^(?:BREAKING CHANGE|BREAKING CHANGES|BREAKING-CHANGE|BREAKING)(?::|[ \t])+/m.test(body)) body += '\n\nBREAKING CHANGE: ' + bang[1];
+    }
+    return { ...entry, message: normalized + (body ? '\n' + body : '') };
+  });
+}
+
+export async function generateReleaseNotes({ commits, version, previous = null, repository,
+  source_sha, date = new Date().toISOString().slice(0, 10), cwd = repoRoot }) {
+  ensure(typeof repository === 'string' && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository), 'Invalid notes repository');
+  ensure(typeof source_sha === 'string' && SHA.test(source_sha) && semver.valid(version) === version &&
+    !semver.prerelease(version) && !version.includes('+'), 'Invalid notes version/source');
+  ensure(previous === null || semver.valid(previous) === previous, 'Invalid previous notes version');
+  ensure(/^\d{4}-\d{2}-\d{2}$/.test(date) && new Date(date + 'T00:00:00Z').toISOString().slice(0, 10) === date, 'Invalid notes date');
+  return generateNotes({ preset: 'angular', parserOpts: semanticConfig.parserOpts,
+    writerOpts: { commitsSort: ['subject', 'scope'], finalizeContext: context => ({ ...context, date }) } }, {
+    cwd, logger, commits: notesInputs(commits), options: { repositoryUrl: 'https://github.com/' + repository },
+    lastRelease: previous ? { version: previous, gitTag: 'v' + previous } : {},
+    nextRelease: { version, gitTag: 'v' + version, gitHead: source_sha }, branch: { name: 'release' },
+  });
 }
 
 function canonical(value) {
@@ -346,20 +591,44 @@ export function preparedChangelog(original, version, date, notes) {
   ensure(semver.valid(version) === version && !semver.prerelease(version) && !version.includes('+'), 'Invalid changelog version');
   ensure(typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) &&
     new Date(date + 'T00:00:00Z').toISOString().slice(0, 10) === date, 'Invalid preparation date');
-  const escaped = version.replaceAll('.', '\\.');
-  ensure(!new RegExp('^##[ \\t]+(?:\\[)?v?' + escaped + '(?:\\])?(?:\\([^\\r\\n]*\\))?(?:[ \\t]+-|[ \\t]*\\r?$)', 'm').test(original),
-    'Version already has a changelog entry; reuse its original preparation manifest');
+  ensure(typeof notes === 'string' && Buffer.byteLength(notes) <= 262144 && !notes.includes('\0'), 'Invalid bounded release notes');
+  const headings = releaseHeadings(original);
+  ensure(!headings.some(entry => entry.version === version), 'Version already has a changelog entry; reuse its original preparation manifest');
   const eol = original.includes('\r\n') ? '\r\n' : '\n';
-  let body = notes.replaceAll('\r\n', '\n').replace(/^#+[^\n]*\n+/, '').trim();
-  if (!body) body = 'Initial release.';
-  body = body.replace(/^## /gm, '### ').replaceAll('\n', eol);
-  const entry = '## ' + version + ' - ' + date + eol + eol + body + eol;
+  const normalized = notes.replaceAll('\r\n', '\n').trim();
+  const supplied = releaseHeadings(normalized);
+  let entry;
+  if (supplied.length) {
+    ensure(supplied.length === 1 && supplied[0].index === 0 && supplied[0].angular &&
+      supplied[0].version === version && supplied[0].date === date, 'Release notes heading identity/date mismatch');
+    entry = normalized.replaceAll('\n', eol) + eol;
+  } else {
+    // Historical interactive preparation accepts plain notes; automated notes have their own Angular heading.
+    const text = normalized.replace(/^#+[^\n]*\n+/, '').replace(/^## /gm, '### ') || 'Initial release.';
+    entry = '## ' + version + ' - ' + date + eol + eol + text.replaceAll('\n', eol) + eol;
+  }
   const placeholder = 'No product release has been recorded. Add a release entry only after explicit' + eol +
     'user confirmation that the task is finished and working.' + eol;
-  const retained = /^## /m.test(original) ? original : original.replace(placeholder, '');
-  const firstEntry = retained.search(/^## /m);
-  if (firstEntry >= 0) return retained.slice(0, firstEntry) + entry + eol + retained.slice(firstEntry);
+  const retained = headings.length ? original : original.replace(placeholder, '');
+  const first = releaseHeadings(retained)[0];
+  if (first) return retained.slice(0, first.index) + entry + eol + retained.slice(first.index);
   return retained + (retained.endsWith(eol + eol) ? '' : retained.endsWith(eol) ? eol : eol + eol) + entry;
+}
+
+export function reconcileUnpublishedChangelog(original, metadata=[]) {
+  ensure(Array.isArray(metadata) && metadata.length<=20,'Unpublished metadata population exceeds bound');
+  let result=original;
+  for(const [index,record] of [...metadata].reverse().entries()){
+    ensure(typeof record.source_sha==='string' && SHA.test(record.source_sha),'Invalid authenticated metadata source');
+    const headings=releaseHeadings(result),matches=headings.filter(entry=>entry.version===record.version);
+    if(index>0 && !matches.length)continue; // A later authenticated preparation already replaced this entry.
+    ensure(matches.length===1,'Unpublished entry changed or conflicts with authenticated metadata');
+    const entry=matches[0],next=headings.find(item=>item.index>entry.index);
+    const existing=result.slice(entry.index,next?.index??result.length);
+    ensure(entry.date===record.date && existing.trim()===record.notes.trim(),'Unpublished entry changed or conflicts with authenticated metadata');
+    result=result.slice(0,entry.index)+result.slice(next?.index??result.length);
+  }
+  return result;
 }
 
 export function confirmPreparation(proposal, confirmation) {
@@ -444,9 +713,10 @@ export function cargoMetadata(directory, { fetch = false } = {}) {
 
 export async function prepareProposal({
   proposal, reviewed_sha256, confirmation, control, cwd = repoRoot,
-  date = new Date().toISOString().slice(0, 10), metadata = cargoMetadata, fetch = false,
+  date = proposal.date ?? new Date().toISOString().slice(0, 10), metadata = cargoMetadata, fetch = false, automatic_authority = null,
 }) {
-  confirmPreparation(proposal, confirmation);
+  if (automatic_authority) validateSourcePreparationAuthority(automatic_authority, proposal);
+  else confirmPreparation(proposal, confirmation);
   ensure(typeof reviewed_sha256 === 'string' && SHA256.test(reviewed_sha256) &&
     proposal.proposal_sha256 === reviewed_sha256 && proposalDigest(proposal) === reviewed_sha256, 'Reviewed proposal digest mismatch');
   const source = proposal.source_sha;
@@ -457,14 +727,22 @@ export async function prepareProposal({
   const exported = path.join(scratch, 'source'); mkdirSync(exported);
   exportSource(cwd, source, exported);
   const files = Object.fromEntries(['Cargo.toml', 'Cargo.lock', 'CHANGELOG.md'].map(name => [name, readFileSync(path.join(exported, name))]));
+  if (automatic_authority) {
+    const snapshot = path.join(exported, 'docs/quality-metrics.md');
+    files['docs/quality-metrics.md'] = existsSync(snapshot) ? readFileSync(snapshot) : Buffer.alloc(0);
+  }
   ensure(manifestVersion(utf8(files['Cargo.toml'])) === proposal.manifest_version, 'Source version changed after proposal');
   const before = await metadata(exported, { fetch });
   const edited = editVersionFiles(files['Cargo.toml'], files['Cargo.lock'], proposal.version);
   ensure(readFileSync(path.join(exported, 'Cargo.lock')).equals(files['Cargo.lock']) &&
     readFileSync(path.join(exported, 'Cargo.toml')).equals(files['Cargo.toml']), 'Cargo changed locked source files before preparation');
-  const changelog = Buffer.from(preparedChangelog(utf8(files['CHANGELOG.md']), proposal.version, date, proposal.notes));
+  const changelog = Buffer.from(preparedChangelog(reconcileUnpublishedChangelog(utf8(files['CHANGELOG.md']),proposal.authenticated_metadata??[]), proposal.version, date, proposal.notes));
   const changes = { 'Cargo.toml': edited.manifest, 'Cargo.lock': edited.lock, 'CHANGELOG.md': changelog };
-  for (const [name, bytes] of Object.entries(changes)) writeFileSync(path.join(exported, name), bytes);
+  if (automatic_authority) changes['docs/quality-metrics.md'] = Buffer.from(automatic_authority.quality_snapshot);
+  for (const [name, bytes] of Object.entries(changes)) {
+    mkdirSync(path.dirname(path.join(exported, name)), { recursive: true });
+    writeFileSync(path.join(exported, name), bytes);
+  }
   const after = await metadata(exported, { fetch: false });
   verifyMetadataGraph(before, after, edited.previous_version, proposal.version);
   for (const [name, bytes] of Object.entries(changes)) ensure(readFileSync(path.join(exported, name)).equals(bytes), 'Cargo changed prepared file bytes: ' + name);
@@ -483,7 +761,8 @@ export async function prepareProposal({
     if (bytes.equals(files[name])) continue;
     changed.push(name);
     const blob = indexGit(['hash-object', '-w', '--no-filters', '--stdin'], bytes).toString('utf8').trim();
-    const mode = git(['ls-tree', source, '--', name], cwd).split(' ')[0];
+    const existingMode = git(['ls-tree', source, '--', name], cwd).split(' ')[0];
+    const mode = existingMode || (automatic_authority && name === 'docs/quality-metrics.md' ? '100644' : '');
     ensure(mode === '100644' || mode === '100755', 'Unexpected prepared file mode');
     indexGit(['update-index', '--add', '--cacheinfo', mode + ',' + blob + ',' + name]);
   }
@@ -503,12 +782,24 @@ export async function prepareProposal({
     permitted_paths: Object.keys(changes), changed_paths: changed,
     metadata_graph_verified: true,
   };
-  const manifest = { ...body, preparation_sha256: canonicalDigest(body) };
+  const { confirmation: manualConfirmation, schema_version: legacySchema, kind: legacyKind, ...common } = body;
+  const manifest = automatic_authority ? sealAutomaticRecord('automatic-preparation', {
+    ...common, control, release_policy_sha256: canonicalDigest(automatic_authority.policy),
+    source_tree_sha: git(['rev-parse', source + '^{tree}'], cwd),
+    source_authority: automatic_authority, commit_date: automatic_authority.commit_date, notes: proposal.notes,
+    authenticated_metadata: proposal.authenticated_metadata??[],
+    files: Object.fromEntries(Object.entries(changes).map(([name, bytes]) => [name, { bytes: bytes.length, sha256: digest(bytes) }])),
+  }) : { ...body, preparation_sha256: canonicalDigest(body) };
   validatePreparation(manifest);
   const output = path.join(scratch, 'artifacts'); mkdirSync(output);
   writeFileSync(path.join(output, 'preparation.patch'), patch);
   writeJson(path.join(output, 'preparation.json'), manifest);
+  if (automatic_authority) writeJson(path.join(output,'proposal.json'),proposal);
+  if (automatic_authority) writeJson(path.join(output, 'prepared-files.json'), Object.fromEntries(Object.entries(changes)
+    .map(([name, bytes]) => [name, { encoding: 'base64', content: bytes.toString('base64') }])));
   writeFileSync(path.join(output, 'apply-instructions.md'),
+    automatic_authority ? '# Automatic release preparation\n\nVersion: ' + manifest.version + '\n\nSource: ' + source +
+    '\n\nExpected tree: ' + expectedTree + '\n\nOnly the trusted metadata writer may advance the existing release ref after persisting its intent. The resulting commit requires its own complete CI/package/native proof.\n' :
     '# Confirmed release preparation\n\nVersion: ' + manifest.version + '\n\nSource: ' + source +
     '\n\nExpected tree: ' + expectedTree + '\n\nPatch SHA-256: ' + manifest.patch_sha256 +
     '\n\nApply the reviewed patch on the existing release branch. Commit it with exactly this source as its single parent, then push it yourself. ' +
@@ -516,7 +807,54 @@ export async function prepareProposal({
   return { manifest, patch, output, scratch };
 }
 
+export function validateSourcePreparationAuthority(authority, proposal) {
+  validateReleasePolicy(authority?.policy);
+  ensure(authority.policy.automation_enabled && authority.complete === true && authority.source_sha === proposal.source_sha &&
+    canonicalDigest(authority.source_ci) === canonicalDigest(proposal.context), 'Unverified automatic source preparation authority');
+  validateContext(authority.source_ci);
+  const context = authority.source_ci, pr = authority.pr;
+  ensure(context.kind === 'hosted' && context.event === 'push' && context.branch === 'release' &&
+    context.source_sha === authority.source_sha && context.tested_sha === authority.source_sha &&
+    context.repository_id === context.head_repository_id, 'Wrong automatic source evidence');
+  counter(pr?.number, 'merged release PR', true);
+  ensure(pr.merged === true && pr.merge_commit_sha === authority.source_sha && pr.base?.ref === 'release' &&
+    pr.head?.ref === 'develop' && pr.base.repo.id === context.repository_id && pr.head.repo.id === context.repository_id,
+  'Automatic preparation requires the exact merged develop-to-release PR');
+  ensure(typeof authority.quality_snapshot === 'string' && authority.quality_snapshot.startsWith('# Quality metrics\n') &&
+    Buffer.byteLength(authority.quality_snapshot) <= 65536, 'Missing bounded preparation quality snapshot');
+  ensure(typeof authority.commit_date === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(authority.commit_date) &&
+    Number.isFinite(Date.parse(authority.commit_date)), 'Invalid frozen metadata commit date');
+  ensure(authority.artifacts && ['quality', 'certification', 'package'].every(kind => {
+    const artifact = authority.artifacts[kind];
+    return artifact && Number.isSafeInteger(artifact.id) && artifact.id > 0 && /^sha256:[a-f0-9]{64}$/.test(artifact.api_digest);
+  }), 'Missing frozen automatic source artifacts');
+  if (proposal.previous === null) ensure(authority.policy.initial_version === proposal.version, 'Automatic bootstrap policy/version mismatch');
+  return true;
+}
+
+export function validateAutomaticPreparation(preparation) {
+  validateAutomaticRecord(preparation, 'automatic-preparation');
+  validateSourcePreparationAuthority(preparation.source_authority, { source_sha: preparation.source_sha,
+    context: preparation.source_ci, previous: preparation.previous, version: preparation.version });
+  ensure(preparation.release_policy_sha256 === canonicalDigest(preparation.source_authority.policy), 'Preparation release policy mismatch');
+  ensure(preparation.metadata_graph_verified === true && SHA.test(preparation.expected_tree) && SHA.test(preparation.source_tree_sha) &&
+    SHA256.test(preparation.patch_sha256) && SHA256.test(preparation.proposal_sha256), 'Incomplete automatic preparation tree/graph');
+  ensure(preparation.source_ci.policy_sha256 === preparation.policy_sha256 &&
+    preparation.source_ci.toolchain_sha256 === preparation.toolchain_sha256, 'Automatic preparation source policy/toolchain drift');
+  const allowed = ['Cargo.toml', 'Cargo.lock', 'CHANGELOG.md', 'docs/quality-metrics.md'];
+  ensure(Array.isArray(preparation.permitted_paths) && [...preparation.permitted_paths].sort().join('|') === [...allowed].sort().join('|') &&
+    Array.isArray(preparation.changed_paths) && preparation.changed_paths.length > 0 &&
+    new Set(preparation.changed_paths).size === preparation.changed_paths.length && preparation.changed_paths.every(name => allowed.includes(name)), 'Automatic preparation path drift');
+  ensure(preparation.files && Object.keys(preparation.files).sort().join('|') === [...allowed].sort().join('|'), 'Automatic prepared files are incomplete');
+  for (const file of Object.values(preparation.files)) {
+    counter(file.bytes, 'prepared file bytes', true);
+    ensure(file.bytes <= 8 * 1024 * 1024 && typeof file.sha256 === 'string' && SHA256.test(file.sha256), 'Invalid bounded prepared file');
+  }
+  return preparation;
+}
+
 export function validatePreparation(preparation) {
+  if (preparation?.schema_version === 2) return validateAutomaticPreparation(preparation);
   ensure(preparation?.schema_version === 1 && preparation.kind === 'confirmed-preparation', 'Unknown preparation schema');
   const { preparation_sha256, ...body } = preparation;
   ensure(typeof preparation_sha256 === 'string' && SHA256.test(preparation_sha256) && canonicalDigest(body) === preparation_sha256, 'Preparation digest mismatch');
@@ -596,7 +934,7 @@ export function releaseReferences(cwd, source, commits, repository) {
   return [...references].sort().map(x => '- ' + x).join('\n');
 }
 
-export async function createProposal({ cwd = repoRoot, source_sha, context, published = [], evidence = null, control = null }) {
+export async function createProposal({ cwd = repoRoot, source_sha, context, published = [], evidence = null, control = null, initial_version = null, automatic = false, authenticated_metadata = [], date = new Date().toISOString().slice(0, 10) }) {
   validateContext(context);
   ensure(context.source_sha === source_sha && context.tested_sha === source_sha, 'Proposal needs actual source push evidence');
   const manifest_version = manifestVersion(git(['show', source_sha + ':Cargo.toml'], cwd));
@@ -606,23 +944,28 @@ export async function createProposal({ cwd = repoRoot, source_sha, context, publ
       context.repository_id === context.head_repository_id, 'Proposal needs same-repository release-push evidence');
     const history = releaseHistory(cwd, source_sha, published);
     ({ previous, commits } = history);
+    ensure(Array.isArray(authenticated_metadata) && authenticated_metadata.length<=20 && (automatic || !authenticated_metadata.length),'Invalid authenticated metadata population');
+    const excluded=new Set();
+    for(const record of authenticated_metadata){
+      ensure(typeof record.source_sha==='string' && SHA.test(record.source_sha) && commits.some(commit=>commit.sha===record.source_sha) &&
+        !excluded.has(record.source_sha) && SHA256.test(record.preparation_sha256) && SHA256.test(record.intent_sha256),'Invalid authenticated metadata exclusion');
+      excluded.add(record.source_sha);
+    }
+    commits=commits.filter(commit=>!excluded.has(commit.sha));
     impact = await semanticImpact(commits, cwd);
-    state = previous ? impact ? 'release' : 'no-release' : 'bootstrap';
-    version = state === 'bootstrap' ? manifest_version : impact ? semver.inc(previous.tag_name.slice(1), impact) : null;
+    state = impact ? previous ? 'release' : 'bootstrap' : 'no-release';
+    if (state === 'bootstrap') {
+      ensure(initial_version !== null, 'Explicit initial-version adoption setting is required');
+      validateReleasePolicy({ schema_version: 1, automation_enabled: false, initial_version });
+      version = initial_version;
+    } else version = impact ? semver.inc(previous.tag_name.slice(1), impact) : null;
     if (previous) ensure(semver.gte(manifest_version, previous.tag_name.slice(1)), 'Manifest version is behind published ancestry');
+    if(automatic && version)ensure(!git(['for-each-ref','--format=%(refname)','refs/tags/v'+version],cwd).split('\n').includes('refs/tags/v'+version),'Version is already reserved; do not replace its commit');
     const eligible = [];
     for (const commit of commits) if (await semanticImpact([commit], cwd)) eligible.push(commit);
     if (version) {
-      notes = await generateNotes({ preset: 'conventionalcommits', presetConfig: { types: [
-        { type: 'feat', section: 'Features' }, { type: 'fix', section: 'Fixes' },
-        { type: 'docs', section: 'Release guidance' },
-      ] } }, {
-        cwd, logger, commits: semanticCommits(eligible),
-        options: { repositoryUrl: 'https://github.com/' + context.repository },
-        lastRelease: previous ? { gitTag: previous.tag_name, version: previous.tag_name.slice(1) } : {},
-        nextRelease: { version, gitTag: 'v' + version, gitHead: source_sha },
-        branch: { name: 'release' },
-      });
+      notes = await generateReleaseNotes({ commits: eligible, version, previous: previous?.tag_name.slice(1) ?? null,
+        repository: context.repository, source_sha, date, cwd });
       notes += '\nSee [release guidance](https://github.com/' + context.repository + '/blob/' + source_sha + '/docs/ci-quality-release-plan.md).\n';
       const references = releaseReferences(cwd, source_sha, eligible, context.repository);
       if (references) notes += '\nReferences:\n\n' + references + '\n';
@@ -630,10 +973,11 @@ export async function createProposal({ cwd = repoRoot, source_sha, context, publ
   } else ensure(context.branch === 'main', 'Version proposals are limited to release/main');
   const proposal = {
     schema_version: 1, state, repository: context.repository, source_sha, context, evidence, control,
-    manifest_version, version, impact, previous, commits, notes,
-    completion_confirmation_required: state !== 'no-release',
-    bootstrap_confirmation_required: state === 'bootstrap',
-    publication_approval_required: state !== 'no-release',
+    manifest_version, version, impact, previous, commits, notes, date,
+    ...(automatic?{authenticated_metadata}:{}),
+    completion_confirmation_required: !automatic && state !== 'no-release',
+    bootstrap_confirmation_required: !automatic && state === 'bootstrap',
+    publication_approval_required: !automatic && state !== 'no-release',
   };
   return { ...proposal, proposal_sha256: proposalDigest(proposal) };
 }

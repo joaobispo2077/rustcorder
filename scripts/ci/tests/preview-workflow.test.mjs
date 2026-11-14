@@ -1,4 +1,30 @@
 import test from 'node:test';
+import { existsSync as automaticExists } from 'node:fs';
+
+test('automatic controller entry point is a separate trusted CI support module', () => {
+  if (!automaticExists(new URL('../release-automation.mjs', import.meta.url))) throw new Error('Automatic release controller is missing');
+});
+
+test('automatic release jobs replace manual handoffs and isolate App, preparation and publisher scopes', () => {
+  const workflow = yaml(readFileSync(new URL('../../../.github/workflows/release.yml', import.meta.url), 'utf8'));
+  assert.ok(workflow.jobs.metadata, 'Automatic metadata writer job is missing');
+  assert.equal(workflow.jobs.prepare.permissions.contents, 'read');
+  const writer = workflow.jobs.metadata;
+  const mint = writer.steps.find(step => step.uses?.startsWith('actions/create-github-app-token@'));
+  assert.equal(mint.uses, 'actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510');
+  assert.equal(mint.with['permission-contents'], 'write');
+  assert.ok(writer.steps.findIndex(step => step.name === 'Persist metadata intent') < writer.steps.findIndex(step => step.name === 'Advance existing release ref'));
+  assert.equal(workflow.jobs.publish.permissions.contents, 'write');
+  assert.equal(workflow.jobs.publish.environment, undefined);
+  assert.ok(!JSON.stringify(workflow.jobs.publish).includes('RELEASE_APP_PRIVATE_KEY'));
+  assert.ok(!workflow.on.workflow_dispatch?.inputs?.completion_confirmed);
+  assert.ok(!JSON.stringify(workflow).includes('[skip ci]'));
+  assert.equal(workflow.jobs.prepare.outputs.artifact_id,'${{ steps.prepare.outputs.artifact_id || steps.artifact.outputs.artifact-id }}');
+  const upload=workflow.jobs.prepare.steps.find(step=>step.uses?.startsWith('actions/upload-artifact@'));
+  assert.ok(upload.if.includes("steps.prepare.outputs.reused != 'true'"));
+  assert.ok(upload.with.name.includes('github.event.workflow_run.head_sha'));
+  assert.equal(workflow.jobs.metadata.permissions['pull-requests'],'read');
+});
 import assert from 'node:assert/strict';
 import * as release from '../release.mjs';
 import { jobNames, git } from '../gates.mjs';

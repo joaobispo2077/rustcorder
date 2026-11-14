@@ -1,5 +1,8 @@
 # CI quality and release implementation evidence
 
+The release authorization/entry format described here is historical. Feature 004
+supersedes it with the [automatic flow](versioning.md) and [current evidence](automated-semantic-release-validation.md).
+
 Implementation began on 2026-11-05 on `main`. Existing staged UI/layout changes
 and the independent transcription/speaker design are preserved. This document
 records executed checks and limits; it is not release authorization.

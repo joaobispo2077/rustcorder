@@ -253,4 +253,4 @@ With multiple developers:
 
 ## Governance completion checks
 
-Verify branch unchanged, requested docs under docs/, and behavior checks passing. Report limits. Release changelog entries await user completion confirmation; tag execution awaits explicit authorization.
+Verify branch unchanged, requested docs under docs/, and behavior checks passing. Report limits. Interactive release entries await completion confirmation and tag execution authorization. Automatic release tasks must implement only the bounded Constitution IV flow and retain disabled adoption until validated owner activation.

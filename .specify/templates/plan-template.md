@@ -45,7 +45,7 @@
 - Failing tests precede behavior implementation; unit-first with justified integration/E2E.
 - Pattern/architecture skill consulted only if introducing those structures.
 - User-requested docs directly under docs/; Spec Kit artifacts under specs/.
-- No release entry/tag recommendation before completion confirmation; no tag execution without authorization.
+- Interactive release entries/tags require confirmation/authorization; any automatic flow must stay within the explicit Constitution IV exception and activation gates.
 
 ## Project Structure
 

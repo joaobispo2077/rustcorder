@@ -18,8 +18,9 @@ Expected user-created branch forms:
 - Other names: preserve the branch and use a relevant docs link, without inventing
   a ticket. Resolve ambiguous implementation requirements from the request.
 
-No changelog release entry or tag recommendation before completion confirmation.
-See versioning.md for the separate authorization required to execute tags.
+Interactive changelog entries and tag recommendations require completion confirmation;
+interactive tag execution requires separate authorization. The owner-activated
+automatic CI exception is documented in [versioning](versioning.md).
 
 ## Required GitHub configuration
 
@@ -31,20 +32,22 @@ require `Package smoke` on every PR: it runs only for actual release pushes and
 is mandatory for publication of that exact commit.
 
 Use PRs and review for feature-to-develop, develop-to-release and release-to-main
-promotions. Keep force pushes and branch deletion disabled. The owner must retain
-a controlled way to commit the confirmed metadata patch directly on existing
-release, with its prepared source as the only parent. Publication still requires
-the resulting push's own successful CI. Agents never perform this push.
+promotions. Keep force pushes and branch deletion disabled. The owner must permit
+the configured automation identity to advance only existing release with the exact
+four-file prepared metadata commit, without branch creation or automatic PR merges.
+Interactive agents retain no branch-operation authority. Publication requires that
+commit's own successful CI/package/native proof and unchanged current release tip.
 
-Create the `release-publish` environment with at least one explicit user reviewer.
-Owner self-review is supported; team-only reviewer configuration is refused by
-the current verifier. Restrict deployments to main. Approval must include the
-exact comment displayed in the preflight summary, binding the candidate digest,
-control run and attempt. An absent reviewer rule, missing approval, stale CI
-attempt or changed release tip blocks publication. Do not substitute an ordinary
-workflow dispatch for this review.
+The fully automatic flow replaces the old release-publish per-release environment
+review. Configure the GH_TOKEN repository secret used by AVO, or the optional
+repository-scoped App client ID/private key. Do not give the reporter either
+credential. Its own job token can write PR comments only. Manual workflow dispatch
+offers a read-only preview and cannot prepare or publish.
 
-These are adoption instructions, not evidence that remote enforcement exists.
-The initial read-only inspection found only unprotected main and no environment.
-Hosted checks, approval behavior and rules must be inspected after owner setup.
-See [validation](ci-quality-release-validation.md) and [release behavior](versioning.md).
+Install the release and quality-comment controllers on default main, verify the
+existing lifecycle refs/rules and supply an explicit initial version before owner
+activation. Production adoption remains disabled. These are setup instructions,
+not proof of remote configuration. No secret value, branch or rule was changed by
+the local implementation. See [current validation](automated-semantic-release-validation.md)
+and [release behavior](versioning.md). Older [feature-003 evidence](ci-quality-release-validation.md)
+records its historical manual publication design.

@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as gates from '../gates.mjs';
+import {readFileSync} from 'node:fs';
+
+test('helper population explicitly accounts for automatic release and PR reporting suites',()=>{
+  const populations=JSON.parse(readFileSync(new URL('../test-populations.json',import.meta.url)));
+  for(const name of ['release-automation','pr-comment','pr-decisions','pr-comment-workflow','notes','automation-fixtures'])assert.ok(populations.ci_support.suites.includes(name));
+});
 
 const listed = 'one: test\ntwo: test\n\n2 tests, 0 benchmarks\n';
 const executed = 'running 2 tests\ntest one ... ok\ntest two ... ignored, external device\n\ntest result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s\n';

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, realpathSync, copyFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, realpathSync, copyFileSync, existsSync,cpSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +8,7 @@ import { gitFixture } from './git-fixture.mjs';
 import * as release from '../release.mjs';
 import { collectEvidence, digest, filesBelow, gateMeasurement, jobNames, loadPolicy, readiness,
   repoRoot, requiredGates, validateReceipt, writeJson } from '../gates.mjs';
-import { renderReport } from '../report.mjs';
+import { renderReport,prProjection } from '../report.mjs';
 
 const started = '2026-11-06T04:00:00.000Z', completed = '2026-11-06T04:00:01.000Z';
 const fixture = new URL('release-flow.fixture.ps1', import.meta.url);
@@ -114,7 +114,7 @@ function sourceApi(context, artifacts) {
   return { api, reads, state };
 }
 
-test('release flow joins confirmed source, final evidence, approval and immutable publication retries', async t => {
+for(const automatic of [false,true])test('release flow joins '+(automatic?'automatic intent':'confirmed source')+', final evidence and immutable publication retries', async t => {
   const boundary = realpathSync(path.join(repoRoot, '.build'));
   const root = mkdtempSync(path.join(boundary, 'release-flow-'));
   t.after(() => { assert.equal(path.dirname(realpathSync(root)), boundary); rmSync(root, { recursive: true }); });
@@ -126,6 +126,7 @@ test('release flow joins confirmed source, final evidence, approval and immutabl
     revision: 'd'.repeat(40), license: 'MIT', license_sha256: digest('synthetic license') };
   const vadBytes = Buffer.from(JSON.stringify(vad) + '\n');
   const initial = repo.commit('chore: fixture baseline', [], {
+    'scripts/ci/release-policy.json':JSON.stringify({schema_version:1,automation_enabled:true,initial_version:null}),
     'scripts/ci/policy.json': JSON.stringify(policy) + '\n',
     'scripts/ci/toolchain.json': readFileSync(new URL('../toolchain.json', import.meta.url), 'utf8'),
     'assets/silero-vad.json': vadBytes.toString(),
@@ -136,9 +137,15 @@ test('release flow joins confirmed source, final evidence, approval and immutabl
     job_id: 'readiness', source_sha: source.sha, tested_sha: source.sha,
     policy_sha256: sourceScope.policy_sha256, toolchain_sha256: sourceScope.toolchain_sha256 };
   const control = { run_id: 404, run_attempt: 1, workflow_id: 405, source_sha: 'c'.repeat(40), actor: 'fixture-owner' };
-  const proposal = await release.createProposal({ cwd: repo.root, source_sha: source.sha, context: structuredClone(context),
-    published: [{ tag_name: 'v0.1.0', tag_object: repo.tag('v0.1.0', initial), target_sha: initial.sha, published: true }] });
-  const prepared = await release.prepareProposal({ cwd: repo.root, proposal, reviewed_sha256: proposal.proposal_sha256,
+  const proposal = await release.createProposal({ cwd: repo.root, source_sha: source.sha, context: structuredClone(context), date: '2026-11-06',
+    published: [{ release_id:99,tag_name: 'v0.1.0', tag_object: repo.tag('v0.1.0', initial), target_sha: initial.sha, published: true }] });
+  const automaticPolicy={schema_version:1,automation_enabled:true,initial_version:null};
+  const sourceAuthority={policy:automaticPolicy,source_sha:source.sha,source_ci:context,complete:true,
+    pr:{number:7,merged:true,merge_commit_sha:source.sha,base:{ref:'release',repo:{id:context.repository_id}},head:{ref:'develop',repo:{id:context.repository_id}}},
+    commit_date:started,quality_snapshot:'# Quality metrics\n\nSynthetic preparation baseline.\n',
+    artifacts:Object.fromEntries(['quality','certification','package'].map((kind,index)=>[kind,{id:700+index,api_digest:'sha256:'+'d'.repeat(64),size_in_bytes:100,
+      name:kind==='package'?'evidence-'+context.run_id+'-1-package':kind+'-'+context.run_id+'-1'}]))};
+  const prepared = await release.prepareProposal({ ...(automatic?{automatic_authority:sourceAuthority}:{}), cwd: repo.root, proposal, reviewed_sha256: proposal.proposal_sha256,
     confirmation: { completion: true }, control, date: '2026-11-06', metadata });
   t.after(() => { assert.equal(path.dirname(realpathSync(prepared.scratch)), boundary); rmSync(prepared.scratch, { recursive: true }); });
   const objectEnv = { ...process.env, GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(prepared.scratch, 'objects') };
@@ -147,7 +154,30 @@ test('release flow joins confirmed source, final evidence, approval and immutabl
     cwd: repo.root, env: objectEnv, input: prepared.manifest.expected_tree + '\n',
   });
   execFileSync('git', ['index-pack', '--stdin'], { cwd: repo.root, input: pack, stdio: ['pipe', 'pipe', 'pipe'] });
-  const finalSha = git(['commit-tree', prepared.manifest.expected_tree, '-p', source.sha, '-m', 'chore(release): prepare 0.2.0']);
+  let metadataIntent=null;
+  let finalSha;
+  if(automatic){
+    const {createMetadataCommit}=await import('../release-automation.mjs');
+    const payload=JSON.parse(readFileSync(path.join(prepared.output,'prepared-files.json')));
+    const files=Object.fromEntries(Object.entries(payload).map(([name,file])=>[name,Buffer.from(file.content,'base64')]));
+    const sourceFiles=Object.fromEntries(['Cargo.toml','Cargo.lock','CHANGELOG.md'].map(name=>[name,Buffer.from(git(['show',source.sha+':'+name])+'\n')]));
+    const originals=sourceApi(context,['quality','certification','evidence-package'].map((name,index)=>({id:700+index,name:name==='evidence-package'?'evidence-'+context.run_id+'-1-package':name+'-'+context.run_id+'-1',digest:'sha256:'+'d'.repeat(64),size_in_bytes:100,expired:false})));
+    const originalPr={id:7,number:7,merged:true,state:'closed',merge_commit_sha:source.sha,base:{ref:'release',repo:{id:context.repository_id,full_name:context.repository}},head:{ref:'develop',repo:{id:context.repository_id,full_name:context.repository}}};
+    const api=async(endpoint,options={})=>{
+      if(endpoint.includes('/commits/') && endpoint.includes('/pulls?'))return[originalPr];
+      if(endpoint.endsWith('/pulls/7'))return originalPr;
+      if(options.method==='POST'){
+        if(endpoint.endsWith('/git/blobs'))return{sha:repo.git(['hash-object','-w','--stdin'],Buffer.from(options.body.content,'base64'))};
+        if(endpoint.endsWith('/git/trees'))return{sha:prepared.manifest.expected_tree};
+        if(endpoint.endsWith('/git/commits'))return{sha:repo.git(['commit-tree',options.body.tree,'-p',options.body.parents[0],'-m',options.body.message]),tree:{sha:options.body.tree},parents:options.body.parents.map(sha=>({sha}))};
+      }
+      return originals.api(endpoint);
+    };
+    const created=await createMetadataCommit({preparation:prepared.manifest,files,sourceFiles,policy:automaticPolicy,writer:{kind:'token',id:909,login:'fixture-owner'},api,
+      preparationArtifact:{id:800,name:'preparation-404-1',size_in_bytes:100,api_digest:'sha256:'+'d'.repeat(64)}});
+    finalSha=created.commit.sha;metadataIntent=created.intent;
+    assert.equal(metadataIntent.parent_sha,source.sha);assert.equal(metadataIntent.source_sha,finalSha);
+  }else finalSha = git(['commit-tree', prepared.manifest.expected_tree, '-p', source.sha, '-m', 'chore(release): prepare 0.2.0']);
   const scope = release.frozenSourceScope(finalSha, 'hosted', repo.root);
   Object.assign(context, { run_id: 304, source_sha: finalSha, tested_sha: finalSha });
   const evidence = path.join(root, 'evidence'); rawQuality(evidence, scope, repo.root);
@@ -176,12 +206,13 @@ test('release flow joins confirmed source, final evidence, approval and immutabl
     assert.equal(git(['show', '-s', '--format=%an <%ae>', finalSha]), 'CI fixture <ci@example.invalid>');
     assert.ok(release.verifyCandidate(prepared.manifest, { sha: finalSha, tree_sha: scope.package.tree_sha,
       parents: git(['rev-list', '--parents', '-n', '1', finalSha]).split(' ').slice(1), version: scope.package.version }));
-    assert.deepEqual(git(['diff-tree', '--no-commit-id', '-r', '--name-only', source.sha, finalSha]).split('\n').sort(), ['CHANGELOG.md', 'Cargo.lock', 'Cargo.toml']);
+    assert.deepEqual(git(['diff-tree', '--no-commit-id', '-r', '--name-only', source.sha, finalSha]).split('\n').sort(), (automatic?['CHANGELOG.md','Cargo.lock','Cargo.toml','docs/quality-metrics.md']:['CHANGELOG.md','Cargo.lock','Cargo.toml']));
     assert.equal(scope.package.version, '0.2.0');
   });
   await t.test('real schema, package and mutation adapters join a complete report', () => {
     assert.deepEqual(collected.errors, []);
     assert.equal(report.json.assessment.ready, true, JSON.stringify(report.json.assessment.reasons));
+    assert.equal(prProjection(report.json).gates.length,18);
     assert.equal(receipts.length, 18);
     assert.equal(receipts.find(x => x.gate === 'package').measurements.kind, 'hosted-release-package');
     for (const gate of ['mutation-rust', 'mutation-ci']) {
@@ -214,33 +245,90 @@ test('release flow joins confirmed source, final evidence, approval and immutabl
     writeFileSync(outcome, bytes);
   });
 
-  const attachments = path.join(root, 'attachments'); mkdirSync(attachments);
+  let attachments = path.join(root, 'attachments'); mkdirSync(attachments);
   const packageManifest = JSON.parse(readFileSync(path.join(evidence, 'package/package-manifest.json')));
   for (const name of [packageManifest.zip.path, 'SHA256SUMS', 'package-manifest.json']) copyFileSync(path.join(evidence, 'package', name), path.join(attachments, name));
   copyFileSync(path.join(root, 'certification.json'), path.join(attachments, 'certification.json'));
   const notes = release.releaseEntry(git(['show', finalSha + ':CHANGELOG.md']), '0.2.0');
   writeFileSync(path.join(attachments, 'release-notes.md'), notes + '\n');
-  const files = filesBelow(attachments).map(file => ({ name: path.basename(file), path: path.basename(file), bytes: readFileSync(file).length, sha256: digest(readFileSync(file)) }));
-  const body = { schema_version: 1, kind: 'release-candidate', repository: context.repository, version: '0.2.0',
+  let files = filesBelow(attachments).map(file => ({ name: path.basename(file), path: path.basename(file), bytes: readFileSync(file).length, sha256: digest(readFileSync(file)) }));
+  let automaticCandidate=null,automaticAuthority=null;
+  if(automatic){
+    const preparationArtifact=metadataIntent.preparation;
+    const intentArtifact={id:801,name:'metadata-'+finalSha+'-404-1',size_in_bytes:100,api_digest:'sha256:'+'d'.repeat(64)};
+    const loadPreparation=async(id,kind)=>{assert.equal(id,800);assert.equal(kind,'preparation');return{root:prepared.output,artifact:preparationArtifact,run:{id:control.run_id,run_attempt:control.run_attempt,head_sha:control.source_sha,event:'workflow_run',workflow_id:control.workflow_id,actor:{login:control.actor}}};};
+    const publicationApi=async(endpoint)=>{
+      if(endpoint===('/repos/'+context.repository+'/releases?per_page=100&page=1'))return[{id:99,tag_name:'v0.1.0',draft:false,prerelease:false}];
+      if(endpoint.endsWith('/git/ref/tags/v0.1.0'))return{object:{type:'tag',sha:proposal.previous.tag_object}};
+      if(endpoint.endsWith('/git/tags/'+proposal.previous.tag_object))return{tag:'v0.1.0',object:{type:'commit',sha:initial.sha}};
+      return hosted.api(endpoint);
+    };
+    const certify=(request,options)=>release.certifyReleaseSource(request,{...options,download:async(repository,artifact,id,target)=>{
+      assert.equal(repository,context.repository);assert.equal(id,context.run_id);mkdirSync(target,{recursive:true});
+      if(artifact.name.startsWith('quality-')){cpSync(evidence,target,{recursive:true});mkdirSync(path.join(target,'report'));writeJson(path.join(target,'report/report.json'),report.json);}
+      else if(artifact.name.startsWith('certification-'))copyFileSync(path.join(root,'certification.json'),path.join(target,'certification.json'));
+      else cpSync(path.join(evidence,'package'),path.join(target,'package'),{recursive:true});
+    }});
+    const frozenRoot=path.join(root,'frozen-candidate');
+    mkdirSync(path.join(repo.root,'scripts/ci'),{recursive:true});
+    writeJson(path.join(repo.root,'scripts/ci/release-policy.json'),automaticPolicy);
+    const {loadUnpublishedMetadata}=await import('../release-automation.mjs');
+    const authenticated=await loadUnpublishedMetadata(finalSha,[proposal.previous],{cwd:repo.root,loadPreparation,
+      loadIntent:async()=>({record:metadataIntent,artifact:intentArtifact})});
+    assert.deepEqual(authenticated.map(record=>record.source_sha),[finalSha]);
+    assert.equal(authenticated[0].preparation_sha256,prepared.manifest.preparation_sha256);
+    const {intent_sha256,...intentBody}=metadataIntent;
+    await assert.rejects(()=>loadUnpublishedMetadata(finalSha,[proposal.previous],{cwd:repo.root,loadPreparation,
+      loadIntent:async()=>({record:release.sealAutomaticRecord('metadata-intent',{...intentBody,parent_sha:'f'.repeat(40)}),artifact:intentArtifact})}),/identity|preparation/i);
+    automaticCandidate=await release.preflight({preparationId:800,request,control,out:frozenRoot,cwd:repo.root,loadPreparation,certify,
+      intent:{record:metadataIntent,artifact:intentArtifact}},publicationApi);
+    automaticAuthority=await release.authorizePublication(automaticCandidate,frozenRoot,control,publicationApi,repo.root,
+      {loadPreparation,loadIntent:async()=>({record:metadataIntent,artifact:intentArtifact})});
+    assert.equal(automaticCandidate.source_sha,finalSha);assert.equal(automaticCandidate.version,scope.package.version);
+    assert.equal(release.validateAutomaticAuthority(automaticCandidate,automaticAuthority,automaticPolicy),true);
+    assert.ok(!readFileSync(path.join(frozenRoot,'candidate.md'),'utf8').includes('protected environment approval'));
+    attachments=frozenRoot;files=automaticCandidate.files;
+  }
+  const body = { schema_version: automatic?2:1, kind: automatic?'automatic-candidate':'release-candidate',
+    ...(automatic?{release_policy_sha256:release.canonicalDigest(automaticPolicy),intent_sha256:metadataIntent.intent_sha256}:{}), repository: context.repository, version: '0.2.0',
     source_sha: finalSha, tree_sha: scope.package.tree_sha, ci: { ...request, workflow_id: context.workflow_id, repository_id: context.repository_id },
     control, files, notes, previous: proposal.previous, preparation_sha256: prepared.manifest.preparation_sha256 };
   const { control: excluded, ...identity } = body;
   const frozen = { ...body, release_sha256: release.canonicalDigest(identity) };
-  const candidate = release.validateCandidateRequest({ ...frozen, candidate_sha256: release.canonicalDigest(frozen) });
+  const candidate = automaticCandidate??release.validateCandidateRequest({ ...frozen, candidate_sha256: release.canonicalDigest(frozen) });
   const environment = { id: 22, name: 'release-publish', protection_rules: [{ type: 'required_reviewers', reviewers: [{ type: 'User', reviewer: { id: 7 } }] }] };
   const review = { state: 'approved', comment: release.approvalText(candidate), environments: [{ id: 22, name: 'release-publish' }], user: { id: 7, login: 'fixture-owner' } };
-  const authorization = { ...release.verifyApproval(candidate, environment, [review]), control };
+  const authorization = automaticAuthority??(automatic?release.sealAutomaticRecord('automatic-publication-authority',{
+    repository:candidate.repository,source_sha:candidate.source_sha,version:candidate.version,release_policy_sha256:candidate.release_policy_sha256,
+    control,candidate_sha256:candidate.candidate_sha256,intent_sha256:candidate.intent_sha256,preparation_sha256:candidate.preparation_sha256,actor:'automatic-ci'
+  }):{ ...release.verifyApproval(candidate, environment, [review]), control });
+  await t.test('automatic authority binds the actual final package and refuses source-P substitution', () => {
+    assert.equal(typeof release.validateAutomaticAuthority, 'function', 'Automatic final-package authority is missing');
+    const automaticPolicy = { schema_version: 1, automation_enabled: true, initial_version: null };
+    const { control: ignoredControl, ...automaticIdentity } = { ...body, schema_version: 2, kind: 'automatic-candidate',
+      release_policy_sha256: release.canonicalDigest(automaticPolicy), intent_sha256: '1'.repeat(64) };
+    const automaticCandidate = release.sealAutomaticRecord('automatic-candidate', { ...automaticIdentity, control,
+      release_sha256: release.canonicalDigest(automaticIdentity) });
+    const authority = release.sealAutomaticRecord('automatic-publication-authority', { repository: context.repository,
+      source_sha: finalSha, version: automaticCandidate.version, release_policy_sha256: automaticCandidate.release_policy_sha256,
+      control, candidate_sha256: automaticCandidate.candidate_sha256, intent_sha256: automaticCandidate.intent_sha256,
+      preparation_sha256: automaticCandidate.preparation_sha256, actor: 'automatic-ci' });
+    assert.equal(release.validateAutomaticAuthority(automaticCandidate, authority, automaticPolicy), true);
+    assert.throws(() => release.validateAutomaticAuthority({ ...automaticCandidate, source_sha: source.sha }, authority, automaticPolicy));
+    assert.ok(files.some(file => file.name === packageManifest.zip.path));
+    assert.equal(scope.package.version, automaticCandidate.version);
+  });
   await t.test('approval cannot authorize a different candidate or control attempt', () => {
     assert.throws(() => release.verifyApproval({ ...candidate, control: { ...control, run_attempt: 2 } }, environment, [review]));
     assert.throws(() => release.verifyApproval({ ...candidate, candidate_sha256: 'f'.repeat(64) }, environment, [review]));
     assert.throws(() => release.validateCandidateRequest({ ...candidate, source_sha: source.sha }));
     const staleAuthorization = { ...authorization, control: { ...control, run_attempt: 2 } };
-    const rejected = powershell('publish', root, { root, attachments, candidate, authorization: staleAuthorization }, 3);
-    assert.match(rejected.error, /run\/attempt/i);
+    const rejected = powershell('publish', root, { root, attachments, candidate, authorization: staleAuthorization,...(automatic?{release_policy:automaticPolicy}:{}) }, 3);
+    assert.match(rejected.error, automatic?/canonical digest/i:/run\/attempt/i);
     assert.equal(rejected.state.calls.length, 0, 'Stale approval reached the fixture transport');
   });
   await t.test('partial draft retry preserves the tag and existing bytes without a real remote', () => {
-    const input = { root, attachments, candidate, authorization, fail_after_first_upload: true };
+    const input = { root, attachments, candidate, authorization, fail_after_first_upload: true,...(automatic?{release_policy:automaticPolicy}:{}) };
     const partial = powershell('publish', root, input, 3);
     assert.equal(partial.state.release.draft, true);
     assert.equal(partial.state.assets.length, 1);
@@ -254,9 +342,11 @@ test('release flow joins confirmed source, final evidence, approval and immutabl
     assert.equal(result.state.calls.filter(x => x.method === 'POST' && x.path.endsWith('/git/refs')).length, 1);
     assert.ok(result.state.calls.every(x => !x.ref || x.ref.startsWith('refs/tags/')));
     const receipt = readFileSync(path.join(attachments, 'publication.json'));
-    const retry = powershell('publish', root, input);
-    assert.deepEqual(retry.result, result.result);
-    assert.ok(readFileSync(path.join(attachments, 'publication.json')).equals(receipt));
+    for(let rerun=0;rerun<3;rerun++){
+      const retry = powershell('publish', root, input);
+      assert.deepEqual(retry.result, result.result);
+      assert.ok(readFileSync(path.join(attachments, 'publication.json')).equals(receipt));
+    }
   });
   assert.equal(repo.git(['for-each-ref']), '');
   assert.ok(readFileSync(path.join(repoRoot, 'Cargo.toml')).equals(workspaceVersion));

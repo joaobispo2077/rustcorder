@@ -5,13 +5,22 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createStrykerConfig, criticalFunctions, mutationCommand, mutationRepoRoot, mutationTestFiles, namedMutationRanges } from '../stryker.config.mjs';
 
+test('automatic authority and PR final-readiness decisions are declared for mutation',()=>{
+  assert.ok(criticalFunctions['release.mjs'].includes('validateAutomaticAuthority'));
+  assert.ok(criticalFunctions['release.mjs'].includes('metadataWriter'));
+  assert.ok(criticalFunctions['release-automation.mjs'].includes('validatePreparedPayload'));
+  assert.ok(criticalFunctions['pr-comment.mjs'].includes('assessPrEvidence'));
+  assert.ok(!criticalFunctions['release.mjs'].includes('verifyApproval'));
+  assert.ok(mutationTestFiles('light').includes('scripts/ci/tests/pr-decisions.test.mjs'));
+});
+
 test('light mutates explicit critical decision ranges and full adds reporting', () => {
   const light = createStrykerConfig('light');
   const full = createStrykerConfig('full');
   for (const pattern of [...light.mutate, ...full.mutate]) {
-    assert.match(pattern, /^scripts\/ci\/(?:gates|release|report|mutation)\.mjs:\d+:\d+-\d+:\d+$/, 'Unbounded source scope: ' + pattern);
+    assert.match(pattern, /^scripts\/ci\/(?:gates|release|release-automation|pr-comment|report|mutation)\.mjs:\d+:\d+-\d+:\d+$/, 'Unbounded source scope: ' + pattern);
   }
-  assert.deepEqual([...new Set(light.mutate.map(x => x.split(':')[0]))], ['scripts/ci/gates.mjs', 'scripts/ci/release.mjs']);
+  assert.deepEqual([...new Set(light.mutate.map(x => x.split(':')[0]))], ['scripts/ci/gates.mjs', 'scripts/ci/release.mjs','scripts/ci/release-automation.mjs','scripts/ci/pr-comment.mjs']);
   assert.deepEqual(full.mutate.slice(0, light.mutate.length), light.mutate);
   assert.deepEqual([...new Set(full.mutate.slice(light.mutate.length).map(x=>x.split(':')[0]))],['scripts/ci/report.mjs','scripts/ci/mutation.mjs']);
 });
@@ -22,24 +31,25 @@ test('ranges follow named function syntax without widening to adjacent code', ()
   assert.throws(() => namedMutationRanges(source, 'fixture.mjs', ['missing']), /critical function/);
   assert.throws(() => namedMutationRanges(source + 'function critical() {}', 'fixture.mjs', ['critical']));
   const light = createStrykerConfig('light');
-  const names = Object.entries(criticalFunctions).filter(([name]) => ['gates.mjs','release.mjs'].includes(name)).flatMap(([, names]) => names);
+  const names = Object.entries(criticalFunctions).filter(([name]) => ['gates.mjs','release.mjs','release-automation.mjs','pr-comment.mjs'].includes(name)).flatMap(([, names]) => names);
   assert.equal(light.mutate.length, names.length);
   for (const pattern of light.mutate) {
     const [filename, range] = pattern.split(':');
     const firstLine = Number(range), sourceLines = readFileSync(path.join(mutationRepoRoot, filename), 'utf8').split(/\r?\n/);
-    assert.match(sourceLines[firstLine - 1], /^(?:export )?(?:async )?function (?:validateContext|validateReceipt|promotion|commitPolicy|requiredGates|readiness|verifyArtifactMetadata|verifyApproval|confirmPreparation|verifyCandidate)\(/);
+    assert.match(sourceLines[firstLine - 1], /^(?:export )?(?:async )?function (?:validateContext|validateReceipt|promotion|commitPolicy|requiredGates|readiness|verifyArtifactMetadata|validateReleasePolicy|validateAutomaticRecord|validateAutomaticAuthority|metadataWriter|verifyCandidate|validatePreparedPayload|assessPrEvidence|newerRun|ownedComments)\(/);
   }
 });
 
 test('command runner uses the declared exact Node population for each profile', () => {
   const light = mutationTestFiles('light'), full = mutationTestFiles('full');
-  assert.deepEqual(light, ['contracts', 'context', 'promotion', 'workflows', 'release-decisions'].map(name => 'scripts/ci/tests/' + name + '.test.mjs'));
+  assert.deepEqual(light, ['contracts', 'context', 'promotion', 'workflows', 'release-decisions','release-automation','pr-decisions'].map(name => 'scripts/ci/tests/' + name + '.test.mjs'));
   assert.deepEqual(full, [...light, 'scripts/ci/tests/report.test.mjs','scripts/ci/tests/mutation.test.mjs']);
   for (const profile of ['light', 'full']) {
     const config = createStrykerConfig(profile);
     assert.equal(config.testRunner, 'command');
     assert.equal(config.commandRunner.command, mutationCommand(profile));
     assert.ok(config.commandRunner.command.includes('--test --test-reporter=dot '));
+    assert.ok(config.commandRunner.command.includes('--test-isolation=none'),'Per-mutant commands must avoid repeated file-worker startup');
     assert.ok(!config.commandRunner.command.includes('*'));
     assert.ok(config.commandRunner.command.includes(process.execPath));
     assert.equal(config.testFiles, undefined, 'Stryker command runner rejects testFiles');
@@ -66,6 +76,7 @@ test('fresh isolated execution preserves raw plan/dry-run reports and custom acc
   assert.equal(config.symlinkNodeModules,false,'Avoid walking Rust outputs and recursively visiting the sandbox');
   assert.match(config.buildCommand,/symlinkSync/);
   assert.ok(config.ignorePatterns.includes('/.build'));
+  for(const directory of ['/models','/workers','/assets/quality'])assert.ok(config.ignorePatterns.includes(directory),'Mutation copies unrelated data: '+directory);
 });
 
 test('invalid profiles, evidence roots and truthy dry-run strings fail closed', () => {

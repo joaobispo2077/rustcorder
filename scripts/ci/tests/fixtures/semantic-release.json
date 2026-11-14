@@ -1,0 +1,111 @@
+{
+  "reference": {
+    "repository": "joaobispo2077/avo",
+    "sha": "76d70116f72ccec2fb559ba06eb2fa5b8ea62f27",
+    "analyzer": "13.0.1",
+    "notes": "14.1.1",
+    "angular": "8.3.1"
+  },
+  "date": "2026-11-14",
+  "cases": [
+    {
+      "name": "feature",
+      "message": "feat(core): add feature",
+      "impact": "minor"
+    },
+    {
+      "name": "fix",
+      "message": "fix(core): retain state",
+      "impact": "patch"
+    },
+    {
+      "name": "performance",
+      "message": "perf(core): improve speed",
+      "impact": "patch"
+    },
+    {
+      "name": "ordinary docs",
+      "message": "docs: clarify guide",
+      "impact": null
+    },
+    {
+      "name": "release docs",
+      "message": "docs(release): correct release guide",
+      "impact": "patch"
+    },
+    {
+      "name": "metadata",
+      "message": "chore(release): 1.2.3",
+      "impact": null
+    },
+    {
+      "name": "refactor",
+      "message": "refactor: simplify loop",
+      "impact": null
+    },
+    {
+      "name": "bang",
+      "message": "feat(core)!: replace protocol",
+      "impact": "major"
+    },
+    {
+      "name": "footer",
+      "message": "fix: migration\n\nBREAKING CHANGE: migrate callers",
+      "impact": "major"
+    },
+    {
+      "name": "plural footer",
+      "message": "fix: migration\n\nBREAKING CHANGES: migrate callers",
+      "impact": "major"
+    },
+    {
+      "name": "short footer",
+      "message": "fix: migration\n\nBREAKING: migrate callers",
+      "impact": "major"
+    },
+    {
+      "name": "breaking docs",
+      "message": "docs: migration\n\nBREAKING CHANGE: migrate callers",
+      "impact": "major"
+    },
+    {
+      "name": "revert",
+      "message": "revert: feat: change\n\nThis reverts commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.",
+      "impact": "patch"
+    },
+    {
+      "name": "hyphen footer",
+      "message": "fix: migration\n\nBREAKING-CHANGE: migrate callers",
+      "impact": "major"
+    },
+    {
+      "name": "ignored bang",
+      "message": "ci!: new required platform",
+      "impact": "major"
+    }
+  ],
+  "commits": [
+    {
+      "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "message": "feat(z): alpha feature"
+    },
+    {
+      "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "message": "feat(a): zulu feature"
+    },
+    {
+      "hash": "cccccccccccccccccccccccccccccccccccccccc",
+      "message": "perf(core): improve speed"
+    },
+    {
+      "hash": "dddddddddddddddddddddddddddddddddddddddd",
+      "message": "docs(release): correct release guide",
+      "notes_message": "fix(release): correct release guide"
+    },
+    {
+      "hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "message": "feat(core)!: replace protocol",
+      "notes_message": "feat(core): replace protocol\n\nBREAKING CHANGE: replace protocol"
+    }
+  ]
+}

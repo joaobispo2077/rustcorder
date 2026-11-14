@@ -34,6 +34,13 @@ test('main promotion retains the published product version', () => {
     published_version:'0.1.0',tested_version:'0.2.0'}));
 });
 
+test('automatic published candidates promote with the exact tree/version and main has no release route',()=>{
+  const valid={event:'pull_request',head:'release',base:'main',same_repository:true,published_sha:'a'.repeat(40),head_sha:'a'.repeat(40),
+    published_tree:'b'.repeat(40),tested_tree:'b'.repeat(40),published_version:'0.2.0',tested_version:'0.2.0'};
+  assert.equal(gates.promotion(valid).accepted,true);
+  for(const change of [{published_sha:null},{published_tree:null},{published_version:null},{tested_version:'0.2.1'},{tested_tree:'c'.repeat(40)},{head_sha:'d'.repeat(40)}])assert.throws(()=>gates.promotion({...valid,...change}));
+});
+
 test('conventional one-character descriptions and multiline breaking bodies are valid', () => {
   assert.ok(gates.commitPolicy([{ message: 'fix: x', parents: 1 }]));
   assert.ok(gates.commitPolicy([{ message: 'feat: change protocol\n\nBREAKING CHANGE: old workers are incompatible', parents: 1 }]));

@@ -8,9 +8,18 @@ import { digest } from '../gates.mjs';
 
 const fixtureContext = JSON.parse(readFileSync(new URL('fixtures/context.json', import.meta.url), 'utf8'));
 function input(repo, source, published = []) {
-  return { cwd: repo.root, source_sha: source.sha, published,
+  return { cwd: repo.root, source_sha: source.sha, published, initial_version: '0.1.0',
     context: { ...fixtureContext, event: 'push', branch: 'release', source_sha: source.sha, tested_sha: source.sha } };
 }
+
+test('bootstrap requires explicit adoption version and maintenance alone stays no-release', async t => {
+  const repo = gitFixture(t), feature = repo.commit('feat: first feature');
+  await assert.rejects(() => release.createProposal({ ...input(repo, feature), initial_version: null }), /initial|adoption/i);
+  const configured = await release.createProposal({ ...input(repo, feature), initial_version: '0.3.0' });
+  assert.equal(configured.version, '0.3.0');
+  const maintenance = repo.commit('docs: ordinary guide');
+  assert.equal((await release.createProposal({ ...input(repo, maintenance), initial_version: null })).state, 'no-release');
+});
 test('bootstrap is explicit and preview never creates release records', async t => {
   const repo = gitFixture(t), source = repo.commit('feat: first feature');
   const before = repo.git(['show', source.sha + ':Cargo.toml']);

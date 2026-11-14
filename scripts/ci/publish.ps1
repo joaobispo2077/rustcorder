@@ -36,8 +36,83 @@ function Assert-PublishLocalFile($File, [string]$Root) {
     return $taskPath
 }
 
-function Assert-PublishBinding($Candidate, $Authorization, [string]$Root) {
-    if (-not (Test-PublishInteger $Candidate.schema_version 1 1) -or $Candidate.kind -isnot [string] -or $Candidate.kind -cne 'release-candidate') { throw 'Unsupported publication candidate.' }
+function ConvertTo-PublishCanonicalString([string]$Value) {
+    # JSON.NET escapes Unicode separators that JSON.stringify preserves; authority digests require identical bytes.
+    $taskBuilder=[Text.StringBuilder]::new();[void]$taskBuilder.Append('"')
+    for($taskIndex=0;$taskIndex -lt $Value.Length;$taskIndex++){
+        $taskCode=[int]$Value[$taskIndex]
+        $taskEscape=switch($taskCode){
+            34 {'\"'}
+            92 {'\\'}
+            8 {'\b'}
+            9 {'\t'}
+            10 {'\n'}
+            12 {'\f'}
+            13 {'\r'}
+            default {
+                if($taskCode -ge 0xd800 -and $taskCode -le 0xdbff -and $taskIndex+1 -lt $Value.Length -and
+                    [int]$Value[$taskIndex+1] -ge 0xdc00 -and [int]$Value[$taskIndex+1] -le 0xdfff){
+                    [string]$Value[$taskIndex]+$Value[++$taskIndex]
+                }elseif($taskCode -lt 32 -or ($taskCode -ge 0xd800 -and $taskCode -le 0xdfff)){'\u'+$taskCode.ToString('x4')}
+                else{[string]$Value[$taskIndex]}
+            }
+        }
+        [void]$taskBuilder.Append($taskEscape)
+    }
+    [void]$taskBuilder.Append('"');return $taskBuilder.ToString()
+}
+
+function ConvertTo-PublishCanonicalJson($Value) {
+    if ($null -eq $Value) { return 'null' }
+    if ($Value -is [string]) { return (ConvertTo-PublishCanonicalString $Value) }
+    if ($Value -is [bool]) { if ($Value) { return 'true' } else { return 'false' } }
+    if ($Value -is [System.Collections.IDictionary]) {
+        [string[]]$taskKeys=@($Value.Keys);[Array]::Sort($taskKeys,[StringComparer]::Ordinal)
+        $taskParts=@(foreach($taskKey in $taskKeys){(ConvertTo-PublishCanonicalString $taskKey)+':'+(ConvertTo-PublishCanonicalJson $Value[$taskKey])})
+        return '{'+($taskParts -join ',')+'}'
+    }
+    if ($Value -is [array]) { return '['+(@(foreach($taskItem in $Value){ConvertTo-PublishCanonicalJson $taskItem}) -join ',')+']' }
+    if (Test-PublishInteger $Value 0) { return ([string]$Value) }
+    throw 'Unsupported canonical publication value.'
+}
+
+function Get-PublishCanonicalDigest($Value) {
+    $taskCanonical=ConvertTo-PublishCanonicalJson $Value
+    $taskHash=[Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($taskHash.ComputeHash([Text.UTF8Encoding]::new($false).GetBytes($taskCanonical))).Replace('-','').ToLowerInvariant()) }
+    finally { $taskHash.Dispose() }
+}
+
+function Get-PublishRecordDigest($Value,[string[]]$Excluded) {
+    $taskUnsigned=@{};foreach($taskKey in $Value.Keys){if($taskKey -cnotin $Excluded){$taskUnsigned[$taskKey]=$Value[$taskKey]}}
+    return Get-PublishCanonicalDigest $taskUnsigned
+}
+
+function Assert-AutomaticPublishBinding($Candidate,$Authorization,$ReleasePolicy) {
+    if($null -eq $ReleasePolicy){$ReleasePolicy=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'release-policy.json') -Raw | ConvertFrom-Json -AsHashtable}
+    if($ReleasePolicy -isnot [System.Collections.IDictionary] -or -not (Test-PublishInteger $ReleasePolicy.schema_version 1 1) -or
+        $ReleasePolicy.automation_enabled -isnot [bool] -or -not $ReleasePolicy.automation_enabled -or
+        (@($ReleasePolicy.Keys | Sort-Object) -join '|') -cne 'automation_enabled|initial_version|schema_version') {throw 'Automatic publication adoption is disabled or invalid.'}
+    if($null -ne $ReleasePolicy.initial_version -and ($ReleasePolicy.initial_version -isnot [string] -or $ReleasePolicy.initial_version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')){throw 'Invalid explicit initial release version.'}
+    if(-not (Test-PublishInteger $Authorization.schema_version 2 2) -or $Authorization.kind -cne 'automatic-publication-authority'){throw 'Automatic publication requires v2 authority.'}
+    if($Authorization.actor -cne 'automatic-ci' -or (@($Authorization.Keys | Sort-Object) -join '|') -cne
+        'actor|authority_sha256|candidate_sha256|control|intent_sha256|kind|preparation_sha256|release_policy_sha256|repository|schema_version|source_sha|version'){
+        throw 'Automatic authority cannot contain manual approval identity or fields.'
+    }
+    if((Get-PublishRecordDigest $Candidate @('candidate_sha256')) -cne $Candidate.candidate_sha256 -or
+        (Get-PublishRecordDigest $Candidate @('candidate_sha256','release_sha256','control')) -cne $Candidate.release_sha256 -or
+        (Get-PublishRecordDigest $Authorization @('authority_sha256')) -cne $Authorization.authority_sha256){throw 'Automatic candidate/authority canonical digest mismatch.'}
+    if((Get-PublishCanonicalDigest $ReleasePolicy) -cne $Candidate.release_policy_sha256){throw 'Automatic release policy changed.'}
+    foreach($taskField in @('candidate_sha256','release_policy_sha256','intent_sha256','preparation_sha256')){Assert-PublishHash $Candidate.$taskField 64}
+    Assert-PublishHash $Authorization.authority_sha256 64
+    foreach($taskField in @('repository','source_sha','version','candidate_sha256','release_policy_sha256','intent_sha256','preparation_sha256')){
+        if($Authorization.$taskField -isnot [string] -or $Authorization.$taskField -cne $Candidate.$taskField){throw ('Automatic authority binding mismatch: '+$taskField)}
+    }
+}
+
+function Assert-PublishBinding($Candidate, $Authorization, [string]$Root, $ReleasePolicy = $null) {
+    $taskAutomatic=(Test-PublishInteger $Candidate.schema_version 2 2) -and $Candidate.kind -ceq 'automatic-candidate'
+    if (-not $taskAutomatic -and (-not (Test-PublishInteger $Candidate.schema_version 1 1) -or $Candidate.kind -cne 'release-candidate')) { throw 'Unsupported publication candidate.' }
     $taskRepository = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'policy.json') -Raw | ConvertFrom-Json).repository
     if ($Candidate.repository -isnot [string] -or $Candidate.repository -cne $taskRepository -or $Candidate.repository -cnotmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw 'Unexpected publication repository.' }
     if ($Candidate.version -isnot [string] -or $Candidate.version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Publication requires stable SemVer.' }
@@ -51,9 +126,12 @@ function Assert-PublishBinding($Candidate, $Authorization, [string]$Root) {
         $Candidate.ci.source_sha -cne $Candidate.source_sha) { throw 'Source CI belongs to another repository or commit.' }
     Assert-PublishControl $Candidate.control
     Assert-PublishControl $Authorization.control
-    if ($Authorization.candidate_sha256 -isnot [string] -or $Authorization.candidate_sha256 -cne $Candidate.candidate_sha256 -or
+    if($taskAutomatic){Assert-AutomaticPublishBinding $Candidate $Authorization $ReleasePolicy}
+    else {
+        if ($Authorization.candidate_sha256 -isnot [string] -or $Authorization.candidate_sha256 -cne $Candidate.candidate_sha256 -or
         $Authorization.actor -isnot [string] -or $Authorization.actor -cnotmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$' -or
         -not (Test-PublishInteger $Authorization.environment_id)) { throw 'Missing exact candidate/environment reviewer authorization.' }
+    }
     foreach ($taskField in @('run_id','run_attempt','workflow_id','source_sha')) {
         if ($Authorization.control.$taskField -cne $Candidate.control.$taskField) { throw 'Authorization belongs to another control run/attempt.' }
     }
@@ -226,11 +304,12 @@ function Get-PublishRedirectUri([string]$Location, [string]$Repository) {
 
 function Assert-PublishTrustedEnvironment($Candidate, $Environment) {
     Assert-PublishControl $Candidate.control
+    $taskExpectedEvent=if($Candidate.schema_version -eq 2){'workflow_run'}else{'workflow_dispatch'}
     foreach($taskField in @('GITHUB_ACTIONS','GITHUB_REPOSITORY','GITHUB_REPOSITORY_ID','GITHUB_REF','GITHUB_WORKFLOW_REF','GITHUB_WORKFLOW_SHA','GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_EVENT_NAME','GITHUB_ACTOR')) {
         if($Environment.$taskField -isnot [string]) { throw 'Missing actual GitHub control environment.' }
     }
     if($Environment.GITHUB_ACTIONS -cne 'true' -or $Environment.GITHUB_REPOSITORY -cne $Candidate.repository -or
-        $Environment.GITHUB_REF -cne 'refs/heads/main' -or $Environment.GITHUB_EVENT_NAME -cne 'workflow_dispatch' -or
+        $Environment.GITHUB_REF -cne 'refs/heads/main' -or $Environment.GITHUB_EVENT_NAME -cne $taskExpectedEvent -or
         $Environment.GITHUB_WORKFLOW_REF -cne ($Candidate.repository+'/.github/workflows/release.yml@refs/heads/main') -or
         $Environment.GITHUB_WORKFLOW_SHA -cne $Candidate.control.source_sha -or $Environment.GITHUB_SHA -cne $Candidate.control.source_sha) { throw 'Publisher must execute the frozen trusted-main release control.' }
     foreach($taskPair in @(@('GITHUB_RUN_ID','run_id'),@('GITHUB_RUN_ATTEMPT','run_attempt'))) {
@@ -241,6 +320,7 @@ function Assert-PublishTrustedEnvironment($Candidate, $Environment) {
 
 function Assert-PublishTrustedControl($Candidate, $Authorization, $Environment, $Run) {
     Assert-PublishTrustedEnvironment $Candidate $Environment
+    $taskExpectedEvent=if($Candidate.schema_version -eq 2){'workflow_run'}else{'workflow_dispatch'}
     Assert-PublishControl $Authorization.control
     if($Environment.GITHUB_REPOSITORY_ID -cnotmatch '^[1-9][0-9]{0,15}$' -or -not (Test-PublishInteger $Run.repository.id) -or
         [long]$Environment.GITHUB_REPOSITORY_ID -ne $Run.repository.id -or $Run.repository.full_name -isnot [string] -or
@@ -249,13 +329,13 @@ function Assert-PublishTrustedControl($Candidate, $Authorization, $Environment, 
     foreach($taskPair in @(@('id','run_id'),@('run_attempt','run_attempt'),@('workflow_id','workflow_id'),@('head_sha','source_sha'))) {
         if($Run.($taskPair[0]) -cne $Candidate.control.($taskPair[1])) { throw 'Actual GitHub control identity changed.' }
     }
-    if($Run.path -isnot [string] -or $Run.path.Split('@')[0] -cne '.github/workflows/release.yml' -or $Run.event -isnot [string] -or $Run.event -cne 'workflow_dispatch' -or $Run.head_branch -isnot [string] -or $Run.head_branch -cne 'main' -or $Run.status -isnot [string] -or $Run.status -cne 'in_progress' -or $Run.actor.login -isnot [string] -or $Run.actor.login -cne $Environment.GITHUB_ACTOR) { throw 'Actual release control workflow/event/actor is not trusted main.' }
+    if($Run.path -isnot [string] -or $Run.path.Split('@')[0] -cne '.github/workflows/release.yml' -or $Run.event -isnot [string] -or $Run.event -cne $taskExpectedEvent -or $Run.head_branch -isnot [string] -or $Run.head_branch -cne 'main' -or $Run.status -isnot [string] -or $Run.status -cne 'in_progress' -or $Run.actor.login -isnot [string] -or $Run.actor.login -cne $Environment.GITHUB_ACTOR) { throw 'Actual release control workflow/event/actor is not trusted main.' }
 }
 
 function Invoke-CiPublish {
     param([Parameter(Mandatory=$true)]$Candidate, [Parameter(Mandatory=$true)][string]$Root,
-        [Parameter(Mandatory=$true)]$Authorization, [Parameter(Mandatory=$true)][scriptblock]$Transport)
-    $taskRoot=Assert-PublishBinding $Candidate $Authorization $Root
+        [Parameter(Mandatory=$true)]$Authorization, [Parameter(Mandatory=$true)][scriptblock]$Transport, $ReleasePolicy = $null)
+    $taskRoot=Assert-PublishBinding $Candidate $Authorization $Root $ReleasePolicy
     $taskPrefix='/repos/'+$Candidate.repository;$taskTagName='v'+$Candidate.version
     $taskMarker='Release-SHA256: '+$Candidate.release_sha256
     $taskMessage='rustcorder '+$taskTagName+"`n`n"+$taskMarker+"`nSource-SHA: "+$Candidate.source_sha
@@ -329,10 +409,18 @@ function Invoke-CiPublish {
         Assert-PublishRelease $taskRelease $Candidate $taskBody
         if ($taskRelease.draft) { throw 'Verified release draft did not become public.' }
     }
-    return [pscustomobject]@{schema_version=1;kind='published-release';status='published';repository=$Candidate.repository;
+    $taskResult=[ordered]@{schema_version=1;kind='published-release';status='published';repository=$Candidate.repository;
         version=$Candidate.version;source_sha=$Candidate.source_sha;candidate_sha256=$Candidate.candidate_sha256;
         release_sha256=$Candidate.release_sha256;tag_name=$taskTagName;tag_object_sha=$taskTag.sha;
         release_id=$taskRelease.id;assets=$taskVerified.ToArray()}
+    if($Candidate.schema_version -eq 2){
+        $taskResult.schema_version=2;$taskResult.kind='automatic-publication-receipt'
+        $taskResult.control=$Candidate.control;$taskResult.release_policy_sha256=$Candidate.release_policy_sha256
+        $taskResult.intent_sha256=$Candidate.intent_sha256;$taskResult.preparation_sha256=$Candidate.preparation_sha256
+        $taskResult.authority_sha256=$Authorization.authority_sha256
+        $taskResult.receipt_sha256=Get-PublishCanonicalDigest $taskResult
+    }
+    return [pscustomobject]$taskResult
 }
 
 function Read-PublishHttpBytes($Response, [long]$Maximum, [Threading.CancellationToken]$Cancellation) {
